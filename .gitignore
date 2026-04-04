@@ -1,0 +1,8 @@
+venv/
+.env
+chromadb/
+__pycache__/
+*.pyc
+*.pem
+requirements1.txt
+chromadb_v2/
