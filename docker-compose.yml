@@ -1,0 +1,52 @@
+version: '3.9'
+
+services:
+  # ── Backend (FastAPI + LangGraph) ───────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: legal-sahara-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - CHROMA_PATH=/app/chromadb
+      - COLLECTION_NAME=legal_judgments_collection
+      - EMBEDDING_MODEL_NAME=BAAI/bge-large-en-v1.5
+    volumes:
+      - chromadb_data:/app/chromadb
+      - ./backend/generated_petitions:/app/generated_petitions
+    networks:
+      - legal_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ── Frontend (React + Nginx) ─────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: legal-sahara-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - legal_net
+
+volumes:
+  chromadb_data:
+    driver: local
+
+networks:
+  legal_net:
+    driver: bridge
