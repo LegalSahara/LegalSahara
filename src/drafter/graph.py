@@ -1,4 +1,5 @@
 
+import os
 from src.drafter.state import LegalGenState
 from langgraph.graph import StateGraph, START, END
 from src.drafter.templates import COURT_FORMATS
@@ -7,6 +8,12 @@ from src.drafter.nodes import (check_missing_info_node, orchestrator_node,
     rag_secondary_node, extract_fields_node, drafter_node, validator_node, revision_node, interim_relief_node)
 from src.drafter.memory import get_memory_context, save_to_memory, USER_MEMORY
 
+# ── CONFIGURATION ────────────────────────────────────────────────────────────
+# Define a local directory for saving petitions instead of Kaggle paths
+OUTPUT_DIR = "generated_petitions"
+if not os.path.exists(OUTPUT_DIR):
+    os.makedirs(OUTPUT_DIR)
+    
 # ── CELL 12: Graph Assembly ───────────────────────────────────────────────────
 def route_after_info(state):      return state.get("next_step", "ask_user")
 def route_after_rag(state):       return state.get("next_step", "rag_secondary")
@@ -135,29 +142,47 @@ def run_legal_assistant(story: str, user_id: str = "default"):
     # Step 4: Save memory
     save_to_memory(user_id, state)
 
-    # Step 5: Print result
+    # ── STEP 5: Print and Save Result ──────────────────────────────────────────
     if state.get("final_petition"):
+        # 1. Setup a safe local directory
+        output_dir = "generated_petitions"
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+
+        # 2. Print Summary to Terminal
         sep = "=" * 65
         print(f"\n{sep}")
         print(f"⚖️  {state.get('petition_type','').upper()}")
         print(f"🏛️  {state.get('jurisdiction','')}")
         print(f"📌 Primary:   {state.get('primary_citation','N/A')} [{state.get('citation_tier','?')}]")
         print(f"📌 Supporting:{state.get('supporting_citation','N/A')}")
+        
         if state.get("red_flags"):
             print(f"🚨 Red flags: {len(state['red_flags'])}")
             for f in state["red_flags"]:
                 print(f"   → {f}")
+
         print(f"✅ Valid: {state.get('is_valid')} | Score: {state.get('eval_overall_score',0):.1f}/10")
         print(f"📊 Struct:{state['eval_structure_score']} Cite:{state['eval_citation_score']} "
               f"Redun:{state['eval_redundancy_score']} Tone:{state['eval_tone_score']} "
               f"Grounds:{state['eval_grounds_count']}")
         print(sep)
-        print(state["final_petition"])
+        
+        # 3. Save to File safely
+        # Create a safe filename (no spaces)
+        p_type_safe = state.get('petition_type', 'petition').replace(' ', '_')
+        fname = f"{user_id}_{p_type_safe}.txt"
+        full_path = os.path.join(output_dir, fname)
 
-        fname = f"/kaggle/working/{user_id}_{state.get('petition_type','petition').replace(' ','_')}.txt"
-        with open(fname, "w") as f:
-            f.write(state["final_petition"])
-        print(f"\n💾 Saved to: {fname}")
+        try:
+            with open(full_path, "w", encoding="utf-8") as f:
+                f.write(state["final_petition"])
+            print(f"\n💾 Saved to: {full_path}")
+        except Exception as e:
+            print(f"⚠️ Error saving file: {e}")
+
+        # Final print of the petition
+        print(f"\n{state['final_petition']}")
     else:
         print("⚠️ No petition generated.")
 

@@ -1,0 +1,36 @@
+chromadb.errors.InvalidCollectionException: Collection legal_judgments_collection does not exist.
+Traceback:
+File "C:\Users\raqib\Desktop\fyp2025-2026_Legal_System\app.py", line 120, in <module>
+    final_state = run_pipeline(initial_state)
+File "C:\Users\raqib\Desktop\fyp2025-2026_Legal_System\app.py", line 61, in run_pipeline
+    return pipeline.invoke(state)
+File "c:\users\raqib\appdata\local\programs\python\python39\lib\site-packages\langgraph\pregel\__init__.py", line 1936, in invoke
+    for chunk in self.stream(
+File "c:\users\raqib\appdata\local\programs\python\python39\lib\site-packages\langgraph\pregel\__init__.py", line 1656, in stream
+    for _ in runner.tick(
+File "c:\users\raqib\appdata\local\programs\python\python39\lib\site-packages\langgraph\pregel\runner.py", line 167, in tick
+    run_with_retry(
+File "c:\users\raqib\appdata\local\programs\python\python39\lib\site-packages\langgraph\pregel\retry.py", line 40, in run_with_retry
+    return task.proc.invoke(task.input, config)
+File "c:\users\raqib\appdata\local\programs\python\python39\lib\site-packages\langgraph\utils\runnable.py", line 408, in invoke
+    input = step.invoke(input, config, **kwargs)
+File "c:\users\raqib\appdata\local\programs\python\python39\lib\site-packages\langgraph\utils\runnable.py", line 184, in invoke
+    ret = context.run(self.func, input, **kwargs)
+File "C:\Users\raqib\Desktop\fyp2025-2026_Legal_System\src\drafter\nodes.py", line 275, in rag_primary_node
+    collection = _get_collection()
+File "C:\Users\raqib\Desktop\fyp2025-2026_Legal_System\src\drafter\nodes.py", line 27, in _get_collection
+    return get_collection()[0]
+File "C:\Users\raqib\Desktop\fyp2025-2026_Legal_System\src\shared\db.py", line 35, in get_collection
+    _init_db()
+File "C:\Users\raqib\Desktop\fyp2025-2026_Legal_System\src\shared\db.py", line 19, in _init_db
+    _collection = _client.get_collection(
+File "c:\users\raqib\appdata\local\programs\python\python39\lib\site-packages\chromadb\api\client.py", line 171, in get_collection
+    model = self._server.get_collection(
+File "c:\users\raqib\appdata\local\programs\python\python39\lib\site-packages\chromadb\telemetry\opentelemetry\__init__.py", line 150, in wrapper
+    return f(*args, **kwargs)
+File "c:\users\raqib\appdata\local\programs\python\python39\lib\site-packages\chromadb\api\segment.py", line 103, in wrapper
+    return self._rate_limit_enforcer.rate_limit(func)(*args, **kwargs)
+File "c:\users\raqib\appdata\local\programs\python\python39\lib\site-packages\chromadb\rate_limit\simple_rate_limit\__init__.py", line 24, in wrapper
+    return func(*args, **kwargs)
+File "c:\users\raqib\appdata\local\programs\python\python39\lib\site-packages\chromadb\api\segment.py", line 316, in get_collection
+    raise InvalidCollectionException(f"Collection {name} does not exist.")

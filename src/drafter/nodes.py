@@ -2,13 +2,15 @@ import re
 import time
 import json
 from langchain_core.prompts import ChatPromptTemplate
-from src.drafter.state import LegalGenState
+from src.drafter.state import LegalGenState  
 from src.rag.retrieval import _dense_search, _bm25_search_filtered, _aggregate_rrf, _expand_case
-from src.drafter.templates import CITATION_TIER_MAP, COURT_FORMATS, STRATEGY_TEMPLATES, INTERIM_RELIEF_MAP, SECTION_SEVERITY, BAIL_STRATEGY_MAP
+from src.drafter.templates import (
+    CITATION_TIER_MAP, COURT_FORMATS, STRATEGY_TEMPLATES, 
+    INTERIM_RELIEF_MAP, SECTION_SEVERITY, BAIL_STRATEGY_MAP
+)
 from src.drafter.memory import USER_MEMORY, save_to_memory, get_memory_context
 from groq import Groq
 from langchain_core.output_parsers import StrOutputParser
-from src.drafter.graph import LegalGenState
 from langchain_groq import ChatGroq
 from config import GROQ_API_KEY
 
