@@ -20,9 +20,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Serve React frontend
-# app.mount("/static", StaticFiles(directory="frontend"), name="static")
-
 
 @app.get("/")
 async def root():
@@ -49,15 +46,32 @@ async def draft_petition(
 ):
     try:
         result = run_legal_assistant(story, user_id=user_id)
+
+        # ── Hard-blocked by guardrails ────────────────────────────────────────
+        if result.get("status") == "blocked":
+            return {
+                "status":            "blocked",
+                "result":            "",
+                "agent_reply":       result.get("agent_reply", "Request blocked."),
+                "guardrail_summary": result.get("guardrail_summary", {}),
+            }
+
+        # ── Successful draft ──────────────────────────────────────────────────
+        guardrail_summary = result.get("guardrail_summary", {})
+        all_warnings      = guardrail_summary.get("all_warnings", [])
+
         return {
-            "status": "ok",
-            "result": result.get("final_petition", ""),
+            "status":              "ok",
+            "result":              result.get("final_petition", ""),
             "petition_type":       result.get("petition_type", ""),
             "jurisdiction":        result.get("jurisdiction", ""),
             "primary_citation":    result.get("primary_citation", ""),
             "supporting_citation": result.get("supporting_citation", ""),
             "eval_overall_score":  result.get("eval_overall_score", 0),
             "red_flags":           result.get("red_flags", []),
+            # ── New guardrail fields ──────────────────────────────────────────
+            "guardrail_warnings":  all_warnings,        # list of warning strings
+            "guardrail_summary":   guardrail_summary,   # full nested summary
         }
     except Exception as e:
         return {"status": "error", "result": str(e)}
@@ -90,30 +104,22 @@ async def draft_pdf(petition_text: str = Form(...)):
 @app.post("/summarize")
 async def summarize(file: UploadFile = File(...)):
     try:
-        # 1. Use a local Windows-friendly directory instead of Linux /tmp/
         temp_dir = "temp"
-        
-        # 2. Create the temp folder if it doesn't exist yet
         if not os.path.exists(temp_dir):
             os.makedirs(temp_dir)
-            
-        # 3. Safely join the folder and filename (handles Windows backslashes)
+
         tmp_path = os.path.join(temp_dir, file.filename)
-        
-        # 4. Save the uploaded file
         with open(tmp_path, "wb") as f:
             shutil.copyfileobj(file.file, f)
-            
-        # 5. Process it with your LangGraph summarizer
+
         result = process_uploaded_document(tmp_path)
-        
-        # 6. Delete the file to keep your folder clean
         os.remove(tmp_path)
-        
+
         return {"status": "ok", "result": result.get("final_memo", "")}
-        
+
     except Exception as e:
         return {"status": "error", "result": str(e)}
+
 
 # ── Health check ──────────────────────────────────────────────────────────────
 

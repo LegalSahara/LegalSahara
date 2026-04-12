@@ -37,7 +37,6 @@ const api = {
       return res.ok;
     } catch { return false; }
   },
-  /** Call backend PDF generator and return a Blob URL */
   async draftPdf(petitionText) {
     const form = new FormData();
     form.append('petition_text', petitionText);
@@ -48,7 +47,6 @@ const api = {
   },
 };
 
-// ─── Helper: plain text download ──────────────────────────────────────────────
 function downloadTxt(text, filename = 'petition.txt') {
   const blob = new Blob([text], { type: 'text/plain' });
   const url  = URL.createObjectURL(blob);
@@ -105,7 +103,6 @@ export default function App() {
             </div>
             <div className="hidden md:block ml-2"><StatusDot online={apiOnline} /></div>
           </div>
-
           <div className="hidden md:flex items-center gap-8">
             <button onClick={() => navigate('landing')} className="text-xs font-semibold text-slate-400 hover:text-white uppercase tracking-widest transition-colors">Platform</button>
             <button onClick={() => navigate('pricing')} className="text-xs font-semibold text-slate-400 hover:text-white uppercase tracking-widest transition-colors">Pricing</button>
@@ -124,7 +121,6 @@ export default function App() {
               </div>
             )}
           </div>
-
           <button className="md:hidden text-slate-400" onClick={() => setMobileMenuOpen(!mobileMenuOpen)}>
             <Menu className="w-6 h-6" />
           </button>
@@ -181,7 +177,6 @@ export default function App() {
           </div>
         </div>
       </div>
-
       <div className="border-y border-white/5 bg-white/[0.02] backdrop-blur">
         <div className="max-w-7xl mx-auto px-4 py-6 grid grid-cols-2 md:grid-cols-4 gap-6">
           {[
@@ -197,7 +192,6 @@ export default function App() {
           ))}
         </div>
       </div>
-
       <div className="max-w-7xl mx-auto px-4 py-24">
         <div className="mb-16">
           <p className="text-xs text-yellow-600 uppercase tracking-widest font-semibold mb-3">Engineered for the Judiciary and Bar</p>
@@ -223,7 +217,6 @@ export default function App() {
           ))}
         </div>
       </div>
-
       <div className="max-w-7xl mx-auto px-4 pb-24">
         <div className="bg-white/[0.02] border border-white/8 rounded-sm p-10">
           <h3 className="text-2xl font-serif font-bold text-white mb-2">Supported Petition Types</h3>
@@ -238,7 +231,6 @@ export default function App() {
           </div>
         </div>
       </div>
-
       <div className="border-t border-white/5 bg-black/20 py-8">
         <div className="max-w-7xl mx-auto px-4 flex flex-col md:flex-row justify-between items-center gap-4">
           <div className="flex items-center gap-2">
@@ -401,7 +393,7 @@ export default function App() {
 
   // ── Drafter Agent ─────────────────────────────────────────────────────────────
   const DrafterAgent = () => {
-    const [messages, setMessages] = useState([{
+    const [messages,  setMessages]  = useState([{
       role: 'agent',
       text: 'Counsel, please provide the brief facts of the case — include the names of the parties, the police station or authority involved, and the nature of the detention or legal issue. I will classify, research precedents, and draft the pleadings.'
     }]);
@@ -410,28 +402,77 @@ export default function App() {
     const [loading,    setLoading]    = useState(false);
     const [pdfLoading, setPdfLoading] = useState(false);
     const [copied,     setCopied]     = useState(false);
-    const [meta,       setMeta]       = useState(null);   // petition meta info
-    const chatEnd    = useRef(null);
+    const [meta,       setMeta]       = useState(null);
+    // ── NEW guardrail state ──────────────────────────────────────────────────
+    const [blockReason, setBlockReason] = useState('');   // non-empty = hard block
+    const [warnings,    setWarnings]    = useState([]);   // soft warning strings
+    // ────────────────────────────────────────────────────────────────────────
+    const chatEnd     = useRef(null);
     const textareaRef = useRef(null);
 
     useEffect(() => { chatEnd.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
     const addMsg = (role, text) => setMessages(prev => [...prev, { role, text }]);
 
+    // Remove the last N messages (used to clear "processing…" spinners)
+    const dropLastN = (n) => setMessages(prev => prev.slice(0, prev.length - n));
+
     const handleSend = async () => {
       const story = input.trim();
       if (!story || loading) return;
+
+      // Reset guardrail state on each new submission
+      setBlockReason('');
+      setWarnings([]);
       setInput('');
       addMsg('user', story);
       setLoading(true);
 
+      // Three ephemeral "processing" messages
       addMsg('agent', '⚙️ Classifying case type and detecting jurisdiction...');
       addMsg('agent', '📚 Retrieving relevant precedents from indexed judgments...');
       addMsg('agent', '✍️ Drafting petition with applicable legal strategy...');
 
       try {
         const data = await api.draft(story);
-        if (data.status === 'ok' && data.result) {
+
+        // ── HARD BLOCK ────────────────────────────────────────────────────
+        // Backend returns { status: "blocked", agent_reply: "<reason>" }
+        if (data.status === 'blocked') {
+          const reason =
+            data.agent_reply ||
+            data.guardrail_summary?.block_reason ||
+            'Your request was blocked. Please revise and try again.';
+          dropLastN(3);
+          setBlockReason(reason);
+          addMsg('blocked', reason);   // special role rendered as red bubble
+          setLoading(false);
+          return;
+        }
+
+        // ── NEEDS MORE INFO ───────────────────────────────────────────────
+        // Backend returns { status: "ok", needs_info: true, agent_reply: "…" }
+        if (data.needs_info) {
+          dropLastN(3);
+          addMsg('agent', data.agent_reply || 'Please provide more details.');
+          setLoading(false);
+          return;
+        }
+
+        // ── API / SERVER ERROR ────────────────────────────────────────────
+        if (data.status === 'error') {
+          dropLastN(3);
+          addMsg('agent', `⚠️ ${data.result || 'An error occurred. Please check the backend is running and ChromaDB is populated.'}`);
+          setLoading(false);
+          return;
+        }
+
+        // ── SUCCESS ───────────────────────────────────────────────────────
+        if (data.result) {
+          // Soft guardrail warnings — petition still generated
+          const w = data.guardrail_warnings || [];
+          setWarnings(w);
+
           setDoc(data.result);
           setMeta({
             type:       data.petition_type,
@@ -441,15 +482,21 @@ export default function App() {
             score:      data.eval_overall_score,
             flags:      data.red_flags || [],
           });
+
+          dropLastN(3);
           addMsg('agent',
             `✅ ${data.petition_type || 'Petition'} drafted for ${data.jurisdiction || 'the relevant court'}.\n` +
-            `Primary citation: ${data.primary_citation || 'N/A'} · Score: ${(data.eval_overall_score || 0).toFixed(1)}/10\n\n` +
-            `Review and edit the document in the right panel, then export as PDF.`
+            `Primary citation: ${data.primary_citation || 'N/A'} · Score: ${(data.eval_overall_score || 0).toFixed(1)}/10` +
+            (w.length > 0 ? `\n\n⚠️ ${w.length} guardrail notice${w.length > 1 ? 's' : ''} — review the yellow banner before filing.` : '') +
+            `\n\nReview and edit the document in the right panel, then export as PDF.`
           );
         } else {
-          addMsg('agent', `⚠️ ${data.result || 'An error occurred. Please check the backend is running and ChromaDB is populated.'}`);
+          dropLastN(3);
+          addMsg('agent', '⚠️ No petition was generated. Please try again with more detail.');
         }
+
       } catch (err) {
+        dropLastN(3);
         addMsg('agent', '❌ Network error. Please ensure the backend server is running on port 8000.');
       } finally {
         setLoading(false);
@@ -460,7 +507,6 @@ export default function App() {
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
     };
 
-    /** Download the current edited text as a professional PDF from the backend */
     const handleDownloadPdf = async () => {
       if (!doc || pdfLoading) return;
       setPdfLoading(true);
@@ -487,7 +533,10 @@ export default function App() {
 
     const clearAll = () => {
       setMessages([{ role: 'agent', text: 'Counsel, please provide the brief facts of the case...' }]);
-      setDoc(''); setMeta(null);
+      setDoc('');
+      setMeta(null);
+      setBlockReason('');
+      setWarnings([]);
     };
 
     return (
@@ -526,17 +575,43 @@ export default function App() {
           <div className="flex-1 overflow-y-auto p-5 space-y-4">
             {messages.map((msg, i) => (
               <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                {msg.role === 'agent' && (
-                  <div className="w-6 h-6 rounded-sm flex items-center justify-center mr-2 shrink-0 mt-0.5" style={{ background: 'rgba(184,134,11,0.2)', border: '1px solid rgba(184,134,11,0.3)' }}>
-                    <Scale className="w-3 h-3 text-yellow-500" />
+
+                {/* Agent avatar */}
+                {(msg.role === 'agent' || msg.role === 'blocked') && (
+                  <div className={`w-6 h-6 rounded-sm flex items-center justify-center mr-2 shrink-0 mt-0.5 ${
+                    msg.role === 'blocked'
+                      ? 'bg-red-900/40 border border-red-700/40'
+                      : 'border border-yellow-600/30'
+                  }`} style={msg.role === 'agent' ? { background: 'rgba(184,134,11,0.2)' } : {}}>
+                    {msg.role === 'blocked'
+                      ? <AlertCircle className="w-3 h-3 text-red-400" />
+                      : <Scale className="w-3 h-3 text-yellow-500" />
+                    }
                   </div>
                 )}
-                <div className={`max-w-[84%] px-4 py-3 text-xs leading-relaxed rounded-sm whitespace-pre-line ${msg.role === 'user' ? 'text-white border border-blue-700/30' : 'text-slate-300 border border-white/5'}`}
-                  style={msg.role === 'user' ? { background: 'rgba(38,83,168,0.35)' } : { background: 'rgba(255,255,255,0.03)' }}>
+
+                <div className={`max-w-[84%] px-4 py-3 text-xs leading-relaxed rounded-sm whitespace-pre-line ${
+                  msg.role === 'user'
+                    ? 'text-white border border-blue-700/30'
+                    : msg.role === 'blocked'
+                      ? 'text-red-300 border border-red-700/40'   // ← RED bubble for block
+                      : 'text-slate-300 border border-white/5'
+                }`} style={
+                  msg.role === 'user'    ? { background: 'rgba(38,83,168,0.35)' }  :
+                  msg.role === 'blocked' ? { background: 'rgba(153,44,44,0.25)' }  :  // ← dark red bg
+                                          { background: 'rgba(255,255,255,0.03)' }
+                }>
+                  {/* Hard-block label */}
+                  {msg.role === 'blocked' && (
+                    <span className="block text-[10px] font-bold uppercase tracking-widest text-red-400 mb-1.5">
+                      ⛔ Request Blocked
+                    </span>
+                  )}
                   {msg.text}
                 </div>
               </div>
             ))}
+
             {loading && (
               <div className="flex items-center gap-2 text-xs text-slate-500">
                 <Loader2 className="w-3 h-3 animate-spin text-yellow-500" />
@@ -575,22 +650,16 @@ export default function App() {
               <span>Petition Draft</span>
               {doc && <span className="text-slate-700">· {doc.length.toLocaleString()} chars</span>}
             </div>
-
             <div className="flex items-center gap-2 flex-wrap">
-              {/* Copy */}
               <button onClick={copyToClipboard} disabled={!doc}
                 className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-slate-400 hover:text-white border border-white/10 hover:border-white/20 px-3 py-2 rounded-sm transition-all disabled:opacity-30 disabled:cursor-not-allowed">
                 {copied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
                 {copied ? 'Copied' : 'Copy'}
               </button>
-
-              {/* Export .TXT */}
               <button onClick={() => doc && downloadTxt(doc, 'petition_draft.txt')} disabled={!doc}
                 className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-slate-400 hover:text-white border border-white/10 hover:border-white/20 px-3 py-2 rounded-sm transition-all disabled:opacity-30 disabled:cursor-not-allowed">
                 <File className="w-3 h-3" /> .TXT
               </button>
-
-              {/* Export Court PDF — primary CTA */}
               <button onClick={handleDownloadPdf} disabled={!doc || pdfLoading}
                 className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest px-4 py-2 rounded-sm transition-all disabled:opacity-30 disabled:cursor-not-allowed shadow-lg shadow-yellow-500/10"
                 style={doc && !pdfLoading
@@ -598,11 +667,52 @@ export default function App() {
                   : { background: 'rgba(184,134,11,0.15)', color: 'rgba(255,255,255,0.25)' }}>
                 {pdfLoading
                   ? <><Loader2 className="w-3 h-3 animate-spin" /> Generating PDF…</>
-                  : <><FileDown className="w-3 h-3" /> Export Court PDF</>
-                }
+                  : <><FileDown className="w-3 h-3" /> Export Court PDF</>}
               </button>
             </div>
           </div>
+
+          {/* ── HARD BLOCK BANNER ─────────────────────────────────────────────
+              Shows above the A4 area when status === "blocked".
+              Replaces the empty doc state so it's immediately visible.          */}
+          {blockReason && (
+            <div className="mx-6 mt-5 flex items-start gap-3 rounded-sm px-5 py-4 border"
+                 style={{ background: 'rgba(153,44,44,0.18)', borderColor: 'rgba(240,149,149,0.3)' }}>
+              <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-xs font-bold text-red-400 uppercase tracking-widest mb-1">Request Blocked</p>
+                <p className="text-xs text-red-300 leading-relaxed">{blockReason}</p>
+              </div>
+              <button onClick={() => setBlockReason('')} className="ml-auto text-red-600 hover:text-red-400 transition-colors shrink-0">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
+          {/* ── SOFT WARNINGS BANNER ──────────────────────────────────────────
+              Shows above the petition when warnings exist but doc was generated. */}
+          {warnings.length > 0 && doc && (
+            <div className="mx-6 mt-5 flex items-start gap-3 rounded-sm px-5 py-4 border"
+                 style={{ background: 'rgba(186,117,23,0.15)', borderColor: 'rgba(250,199,117,0.35)' }}>
+              <AlertCircle className="w-4 h-4 text-yellow-400 shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <p className="text-xs font-bold text-yellow-400 uppercase tracking-widest mb-2">
+                  Review Before Filing — {warnings.length} Notice{warnings.length > 1 ? 's' : ''}
+                </p>
+                <ul className="space-y-1">
+                  {warnings.map((w, i) => (
+                    <li key={i} className="text-xs text-yellow-200/80 leading-relaxed flex items-start gap-2">
+                      <span className="text-yellow-500 shrink-0 mt-0.5">·</span>
+                      {w}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              <button onClick={() => setWarnings([])} className="ml-2 text-yellow-700 hover:text-yellow-400 transition-colors shrink-0">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
 
           {/* A4 paper area */}
           <div className="flex-1 overflow-y-auto p-8 flex justify-center" style={{ background: '#0F1929' }}>
@@ -686,7 +796,6 @@ export default function App() {
             <p className="text-xs text-slate-500 uppercase tracking-widest">Hybrid Semantic + BM25 Retrieval · 10,482 Judgments</p>
             <div className="h-px w-full bg-gradient-to-r from-yellow-700/30 to-transparent mt-4" />
           </div>
-
           <div className="relative mb-4">
             <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
             <input
@@ -701,7 +810,6 @@ export default function App() {
               {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Query DB'}
             </button>
           </div>
-
           <div className="flex flex-wrap gap-2 mb-8">
             {EXAMPLES.map((ex, i) => (
               <button key={i} onClick={() => setQuery(ex)}
@@ -710,13 +818,11 @@ export default function App() {
               </button>
             ))}
           </div>
-
           {error && (
             <div className="flex items-start gap-3 bg-red-900/20 border border-red-700/30 rounded-sm p-4 mb-6 text-sm text-red-300">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />{error}
             </div>
           )}
-
           {result && (
             <div className="bg-white/[0.03] border border-white/10 rounded-sm overflow-hidden mb-8">
               <div className="px-5 py-3 border-b border-white/8 flex items-center justify-between" style={{ background: 'rgba(38,83,168,0.15)' }}>
@@ -733,7 +839,6 @@ export default function App() {
               </div>
             </div>
           )}
-
           {!result && !error && !loading && (
             <div className="bg-white/[0.02] border border-white/8 rounded-sm p-16 text-center">
               <BookOpen className="w-12 h-12 text-slate-700 mx-auto mb-4" />
@@ -741,7 +846,6 @@ export default function App() {
               <p className="text-xs text-slate-700 mt-1">Ready for semantic query</p>
             </div>
           )}
-
           {history.length > 0 && (
             <div>
               <p className="text-[10px] text-slate-600 uppercase tracking-widest font-bold mb-3">Recent Queries</p>
@@ -805,7 +909,6 @@ export default function App() {
             <p className="text-xs text-slate-500 uppercase tracking-widest">AI extraction · Facts · Issues · Holding · Ratio Decidendi</p>
             <div className="h-px w-full bg-gradient-to-r from-yellow-700/30 to-transparent mt-4" />
           </div>
-
           <div className="bg-white/[0.03] border border-white/10 rounded-sm overflow-hidden">
             <div className="p-6">
               <div
@@ -837,13 +940,11 @@ export default function App() {
                   </div>
                 )}
               </div>
-
               {error && (
                 <div className="flex items-center gap-2 mt-4 text-xs text-red-300 bg-red-900/20 border border-red-700/20 rounded-sm p-3">
                   <AlertCircle className="w-4 h-4 shrink-0" />{error}
                 </div>
               )}
-
               <button onClick={submit} disabled={!file || loading}
                 className="mt-5 w-full py-4 text-xs font-bold uppercase tracking-widest rounded-sm transition-all disabled:opacity-30 disabled:cursor-not-allowed"
                 style={{ background: 'linear-gradient(135deg,#B8860B,#E8C84A)', color: '#0A1628' }}>
@@ -853,7 +954,6 @@ export default function App() {
               </button>
             </div>
           </div>
-
           {result && (
             <div className="mt-8 bg-white/[0.03] border border-white/10 rounded-sm overflow-hidden">
               <div className="px-5 py-3 border-b border-white/8 flex items-center justify-between" style={{ background: 'rgba(38,83,168,0.15)' }}>

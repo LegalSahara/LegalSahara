@@ -9,6 +9,11 @@ from src.drafter.nodes import (
     drafter_node, validator_node, revision_node, interim_relief_node,
 )
 from src.drafter.memory import get_memory_context, save_to_memory, USER_MEMORY
+from src.drafter.guardrails import (
+    run_input_guardrails,
+    run_output_guardrails,
+    summarise_guardrail_results,
+)
 
 # ── Output directory ──────────────────────────────────────────────────────────
 OUTPUT_DIR = "generated_petitions"
@@ -70,37 +75,27 @@ def run_legal_assistant(messages, user_id: str = "default"):
       - a plain string
 
     Returns a dict with keys:
-      status, needs_info, agent_reply, final_petition
+      status, needs_info, agent_reply, final_petition,
+      guardrail_summary (always present)
     """
-    # ── Normalise input ───────────────────────────────────────────────────────
-    # Supports four calling conventions:
-    #   1. run_legal_assistant(("user_id", "story string"))        ← tuple shorthand
-    #   2. run_legal_assistant([{"role": "user", "text": "..."}])  ← chat list (text key)
-    #   3. run_legal_assistant([{"role": "user", "content": "..."}]) ← chat list (content key)
-    #   4. run_legal_assistant("plain story string", user_id)      ← plain string
 
+    # ── Normalise input ───────────────────────────────────────────────────────
     def _extract_text(msg) -> str:
-        """Pull message body from a dict, Pydantic model, or plain string."""
         if isinstance(msg, dict):
             return msg.get("text") or msg.get("content") or ""
-        # Pydantic model or any object with attributes
         return getattr(msg, "text", None) or getattr(msg, "content", None) or str(msg)
 
     def _get_role(msg) -> str:
-        """Get role from a dict or Pydantic model."""
         if isinstance(msg, dict):
             return msg.get("role", "user")
         return getattr(msg, "role", "user")
 
     if isinstance(messages, tuple) and len(messages) == 2:
-        # Convention 1 — unpack (user_id, story_string)
         user_id       = str(messages[0])
         story         = str(messages[1])
         current_input = story
 
     elif isinstance(messages, list):
-        # Convention 2/3 — chat list of dicts OR Pydantic ChatMessage objects
-        # Keep USER turns only so assistant preamble doesn't pollute the story
         last_msg      = messages[-1] if messages else {}
         current_input = _extract_text(last_msg)
         story = "\n".join(
@@ -110,22 +105,45 @@ def run_legal_assistant(messages, user_id: str = "default"):
         )
 
     else:
-        # Convention 4 — plain string
         current_input = str(messages)
         story         = str(messages)
 
     if not isinstance(story, str):
         story = str(story)
 
-    # ── Debug: log exactly what we parsed so issues are easy to spot ─────────
     print(f"🔍 [Runner] user_id={user_id!r} | story_len={len(story)} | preview={story[:120]!r}")
+
+    # ════════════════════════════════════════════════════════════════
+    # INPUT GUARDRAILS — run BEFORE anything else
+    # ════════════════════════════════════════════════════════════════
+    input_guard_results = run_input_guardrails(story, user_id=user_id)
+    input_guard_summary = summarise_guardrail_results(input_guard_results)
+
+    if input_guard_summary["is_blocked"]:
+        print(f"🚫 [Guardrails] Input BLOCKED: {input_guard_summary['block_reason']}")
+        return {
+            "status":           "blocked",
+            "needs_info":       False,
+            "agent_reply":      input_guard_summary["block_reason"],
+            "final_petition":   None,
+            "guardrail_summary": input_guard_summary,
+        }
+
+    # Collect soft-warnings to surface to the user alongside the petition
+    input_warnings = input_guard_summary.get("warnings", [])
+    if input_warnings:
+        print(f"⚠️  [Guardrails] Input warnings: {input_warnings}")
+
+    # Truncate extremely long stories gracefully (guardrail already warned)
+    if len(story) > 15_000:
+        story = story[:15_000]
 
     # ── Build initial state ───────────────────────────────────────────────────
     mem_ctx = get_memory_context(user_id)
     state = {
         "user_story":   story,
         "user_id":      user_id,
-        "jurisdiction": "",          # orchestrator will set this
+        "jurisdiction": "",
         "is_complete":  False,
         "missing_info": [],
         "petition_type":    "",
@@ -147,12 +165,10 @@ def run_legal_assistant(messages, user_id: str = "default"):
         "revision_count":   0,
         "final_petition":   "",
         "memory_context":   mem_ctx,
-        # enriched fields
         "red_flags":        [],
         "legal_strategy":   "",
         "citation_tier":    "UNKNOWN",
         "interim_relief":   "",
-        # eval fields
         "eval_structure_score":  0,
         "eval_citation_score":   0,
         "eval_grounds_count":    0,
@@ -163,7 +179,7 @@ def run_legal_assistant(messages, user_id: str = "default"):
         "eval_timestamp":        "",
     }
 
-    # ── Run the compiled graph (handles info-check → full pipeline internally) ─
+    # ── Run the compiled graph ────────────────────────────────────────────────
     output = legal_gen_app.invoke(state)
     state.update(output)
 
@@ -183,17 +199,44 @@ def run_legal_assistant(messages, user_id: str = "default"):
                 "and the nature of the legal issue."
             )
         return {
-            "status":         "ok",
-            "needs_info":     True,
-            "agent_reply":    reply,
-            "final_petition": None,
+            "status":           "ok",
+            "needs_info":       True,
+            "agent_reply":      reply,
+            "final_petition":   None,
+            "guardrail_summary": input_guard_summary,
         }
 
-    # ── Save memory and return result ─────────────────────────────────────────
+    # ── Save memory ───────────────────────────────────────────────────────────
     save_to_memory(user_id, state)
 
+    # ════════════════════════════════════════════════════════════════
+    # OUTPUT GUARDRAILS — run AFTER the petition is generated
+    # ════════════════════════════════════════════════════════════════
+    output_guard_results = []
+    output_guard_summary = {"guardrails_passed": 0, "warnings": [], "is_blocked": False}
+
     if state.get("final_petition"):
-        # Print summary
+        output_guard_results = run_output_guardrails(
+            petition_text     = state["final_petition"],
+            user_story        = story,
+            petitioner        = state.get("petitioner",        ""),
+            detenu            = state.get("detenu",            ""),
+            primary_citation  = state.get("primary_citation",  ""),
+            supporting_citation = state.get("supporting_citation", ""),
+        )
+        output_guard_summary = summarise_guardrail_results(output_guard_results)
+        output_warnings      = output_guard_summary.get("warnings", [])
+        if output_warnings:
+            print(f"⚠️  [Guardrails] Output warnings: {output_warnings}")
+
+    # Merge input + output guardrail summaries for the API response
+    combined_guard_summary = {
+        "input":  input_guard_summary,
+        "output": output_guard_summary,
+        "all_warnings": input_warnings + output_guard_summary.get("warnings", []),
+    }
+
+    if state.get("final_petition"):
         sep = "=" * 65
         print(f"\n{sep}")
         print(f"⚖️  {state.get('petition_type', '').upper()}")
@@ -208,9 +251,12 @@ def run_legal_assistant(messages, user_id: str = "default"):
         print(f"📊 Struct:{state['eval_structure_score']} Cite:{state['eval_citation_score']} "
               f"Redun:{state['eval_redundancy_score']} Tone:{state['eval_tone_score']} "
               f"Grounds:{state['eval_grounds_count']}")
+        if combined_guard_summary["all_warnings"]:
+            print(f"🛡️  Guardrail warnings: {len(combined_guard_summary['all_warnings'])}")
+            for w in combined_guard_summary["all_warnings"]:
+                print(f"   ⚠️ {w[:100]}")
         print(sep)
 
-        # Save to file
         p_type_safe = state.get("petition_type", "petition").replace(" ", "_")
         fname    = f"{user_id}_{p_type_safe}.txt"
         filepath = os.path.join(OUTPUT_DIR, fname)
@@ -225,7 +271,9 @@ def run_legal_assistant(messages, user_id: str = "default"):
     else:
         print("⚠️ No petition generated.")
 
+    # Attach guardrail summary to state for API response
+    state["guardrail_summary"] = combined_guard_summary
     return state
 
 
-print("✅ Runner ready")
+print("✅ Runner ready (with guardrails)")
