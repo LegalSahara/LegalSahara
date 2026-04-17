@@ -1,7 +1,5 @@
 import chromadb
 from chromadb.utils import embedding_functions
-from chromadb import Client
-from chromadb.config import Settings
 from config import CHROMA_PATH, COLLECTION_NAME, EMBEDDING_MODEL_NAME
 
 _client = None
@@ -16,31 +14,26 @@ def _init_db():
         return
 
     try:
-        # Correct client with proper path
-        _client = Client(Settings(
-            persist_directory="/app/chromadb_v2"
-        ))
+        _client = chromadb.PersistentClient(path="/app/chromadb_v2")
 
         embed_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
             model_name=EMBEDDING_MODEL_NAME
         )
 
-        # Check existing collections
-        existing_collections = [c.name for c in _client.list_collections()]
+        # v0.6.0: list_collections() returns strings, not objects
+        existing_collections = _client.list_collections()
         print(f"📂 Existing collections: {existing_collections}")
 
-        # Use get_collection (NOT create)
         _collection = _client.get_collection(
             name=COLLECTION_NAME,
             embedding_function=embed_fn
         )
 
-        # Load data
         res = _collection.get()
 
         if not res or not res.get("ids"):
             _CHUNKS = []
-            print("⚠️ Collection exists but is EMPTY (no embeddings found)")
+            print("⚠️ Collection exists but is EMPTY")
         else:
             _CHUNKS = [
                 {
@@ -50,10 +43,10 @@ def _init_db():
                 }
                 for i in range(len(res["ids"]))
             ]
-            print(f"DB loaded: {len(_CHUNKS)} chunks")
+            print(f"✅ DB loaded: {len(_CHUNKS)} chunks")
 
     except Exception as e:
-        print(f"Error initializing ChromaDB: {e}")
+        print(f"❌ Error initializing ChromaDB: {e}")
         _collection = None
         _CHUNKS = []
 

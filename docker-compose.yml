@@ -19,6 +19,7 @@ services:
     volumes:
       - ./backend/chromadb_v2:/app/chromadb_v2
       - ./backend/generated_petitions:/app/generated_petitions
+      - huggingface_cache:/root/.cache/huggingface 
     networks:
       - legal_net
     healthcheck:
@@ -44,6 +45,8 @@ services:
 
 volumes:
   chromadb_data:
+    driver: local
+  huggingface_cache:
     driver: local
 
 networks:
