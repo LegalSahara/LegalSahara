@@ -8,42 +8,116 @@ import {
   Copy, Check, PenLine, Brain, Zap, Database, FileDown,
 } from 'lucide-react';
 
-// ─── API layer ────────────────────────────────────────────────────────────────
+// ─── API layer with authentication ────────────────────────────────────────────
 const API_BASE = process.env.REACT_APP_API_URL || '';
 
 const api = {
+  // ── Local storage for token management ────────────────────────────────────
+  setToken(token) {
+    localStorage.setItem('access_token', token);
+  },
+
+  getToken() {
+    return localStorage.getItem('access_token');
+  },
+
+  clearToken() {
+    localStorage.removeItem('access_token');
+  },
+
+  // ── Headers with authorization ───────────────────────────────────────────
+  getAuthHeaders() {
+    const token = this.getToken();
+    return {
+      'Authorization': token ? `Bearer ${token}` : '',
+    };
+  },
+
+  // ── Auth endpoints ───────────────────────────────────────────────────────
+  async login(email, password) {
+    const form = new FormData();
+    form.append('email', email);
+    form.append('password', password);
+    const res = await fetch(`${API_BASE}/auth/login`, { method: 'POST', body: form });
+    const data = await res.json();
+    if (data.status === 'ok') {
+      this.setToken(data.access_token);
+    }
+    return data;
+  },
+
+  async signup(email, password, fullName) {
+    const form = new FormData();
+    form.append('email', email);
+    form.append('password', password);
+    form.append('full_name', fullName);
+    const res = await fetch(`${API_BASE}/auth/signup`, { method: 'POST', body: form });
+    return res.json();
+  },
+
+  async verifyToken() {
+    const res = await fetch(`${API_BASE}/auth/verify`, {
+      method: 'GET',
+      headers: this.getAuthHeaders(),
+    });
+    return res.json();
+  },
+
+  // ── Protected endpoints ──────────────────────────────────────────────────
   async draft(story) {
     const form = new FormData();
     form.append('story', story);
     form.append('user_id', 'web_user');
-    const res = await fetch(`${API_BASE}/draft`, { method: 'POST', body: form });
+    const res = await fetch(`${API_BASE}/draft`, {
+      method: 'POST',
+      body: form,
+      headers: this.getAuthHeaders(),
+    });
     return res.json();
   },
+
   async rag(query) {
     const form = new FormData();
     form.append('query', query);
-    const res = await fetch(`${API_BASE}/rag`, { method: 'POST', body: form });
+    const res = await fetch(`${API_BASE}/rag`, {
+      method: 'POST',
+      body: form,
+      headers: this.getAuthHeaders(),
+    });
     return res.json();
   },
+
   async summarize(file) {
     const form = new FormData();
     form.append('file', file);
-    const res = await fetch(`${API_BASE}/summarize`, { method: 'POST', body: form });
+    const res = await fetch(`${API_BASE}/summarize`, {
+      method: 'POST',
+      body: form,
+      headers: this.getAuthHeaders(),
+    });
     return res.json();
   },
+
+  async draftPdf(petitionText) {
+    const form = new FormData();
+    form.append('petition_text', petitionText);
+    const res = await fetch(`${API_BASE}/draft/pdf`, {
+      method: 'POST',
+      body: form,
+      headers: this.getAuthHeaders(),
+    });
+    if (!res.ok) throw new Error(`PDF endpoint returned ${res.status}`);
+    const blob = await res.blob();
+    return URL.createObjectURL(blob);
+  },
+
   async health() {
     try {
       const res = await fetch(`${API_BASE}/health`);
       return res.ok;
-    } catch { return false; }
-  },
-  async draftPdf(petitionText) {
-    const form = new FormData();
-    form.append('petition_text', petitionText);
-    const res = await fetch(`${API_BASE}/draft/pdf`, { method: 'POST', body: form });
-    if (!res.ok) throw new Error(`PDF endpoint returned ${res.status}`);
-    const blob = await res.blob();
-    return URL.createObjectURL(blob);
+    } catch { 
+      return false; 
+    }
   },
 };
 
@@ -75,10 +149,30 @@ export default function App() {
   const [activeTab, setActiveTab]   = useState('drafter');
   const [apiOnline, setApiOnline]   = useState(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [currentUser, setCurrentUser] = useState(null);
 
   useEffect(() => {
     api.health().then(setApiOnline);
     const id = setInterval(() => api.health().then(setApiOnline), 30000);
+    
+    // ── Check if user has valid token ────────────────────────────────
+    const checkAuth = async () => {
+      const token = api.getToken();
+      if (token) {
+        const result = await api.verifyToken();
+        if (result.status === 'ok') {
+          setIsLoggedIn(true);
+          setCurrentUser(result.user);
+        } else {
+          api.clearToken();
+          setIsLoggedIn(false);
+          setCurrentUser(null);
+        }
+      }
+    };
+    
+    checkAuth();
+    
     return () => clearInterval(id);
   }, []);
 
@@ -86,8 +180,18 @@ export default function App() {
     setPage(p); setMobileMenuOpen(false); window.scrollTo(0, 0);
   }, []);
 
-  const login  = () => { setIsLoggedIn(true);  navigate('workspace'); };
-  const logout = () => { setIsLoggedIn(false); navigate('landing'); };
+  const login  = (user) => { 
+    setCurrentUser(user);
+    setIsLoggedIn(true);  
+    navigate('workspace'); 
+  };
+  
+  const logout = () => { 
+    api.clearToken();
+    setCurrentUser(null);
+    setIsLoggedIn(false); 
+    navigate('landing'); 
+  };
 
   // ── Navbar ──────────────────────────────────────────────────────────────────
   const Navbar = () => (
@@ -168,7 +272,7 @@ export default function App() {
             Empowering High Court and Supreme Court advocates with Agentic AI. Research PLD &amp; SCMR precedents, brief voluminous case files, and draft court-ready petitions with absolute precision — exported as professionally typeset PDFs.
           </p>
           <div className="flex flex-wrap gap-4">
-            <button onClick={() => navigate('signup')} className="bg-yellow-500 hover:bg-yellow-400 text-xs font-bold uppercase tracking-widest px-8 py-4 rounded-sm flex items-center gap-2 transition-all shadow-lg shadow-yellow-500/20" style={{ color: '#0A1628' }}>
+            <button onClick={() => navigate('login')} className="bg-yellow-500 hover:bg-yellow-400 text-xs font-bold uppercase tracking-widest px-8 py-4 rounded-sm flex items-center gap-2 transition-all shadow-lg shadow-yellow-500/20" style={{ color: '#0A1628' }}>
               Access Workspace <ArrowRight className="w-4 h-4" />
             </button>
             <button onClick={() => navigate('pricing')} className="border border-white/15 hover:border-white/30 text-white text-xs font-bold uppercase tracking-widest px-8 py-4 rounded-sm transition-all">
@@ -280,7 +384,7 @@ export default function App() {
                   </li>
                 ))}
               </ul>
-              <button onClick={() => navigate('signup')} className={`w-full py-3.5 text-xs font-bold uppercase tracking-widest rounded-sm transition-all ${plan.highlight ? 'bg-yellow-500 hover:bg-yellow-400 shadow-lg shadow-yellow-500/20' : 'bg-white/5 hover:bg-white/10 text-white border border-white/10'}`} style={plan.highlight ? { color: '#0A1628' } : {}}>
+              <button onClick={() => navigate('login')} className={`w-full py-3.5 text-xs font-bold uppercase tracking-widest rounded-sm transition-all ${plan.highlight ? 'bg-yellow-500 hover:bg-yellow-400 shadow-lg shadow-yellow-500/20' : 'bg-white/5 hover:bg-white/10 text-white border border-white/10'}`} style={plan.highlight ? { color: '#0A1628' } : {}}>
                 {plan.cta}
               </button>
             </div>
@@ -291,51 +395,138 @@ export default function App() {
   );
 
   // ── Auth Page ─────────────────────────────────────────────────────────────────
-  const AuthPage = ({ type }) => (
-    <div className="min-h-[90vh] flex items-center justify-center px-4" style={{ background: 'linear-gradient(135deg,#03082E 0%,#0A1628 100%)' }}>
-      <div className="w-full max-w-md">
-        <div className="bg-white/[0.03] border border-white/10 rounded-sm p-10 shadow-2xl">
-          <div className="text-center mb-10">
-            <Scale className="w-12 h-12 text-yellow-500 mx-auto mb-4" />
-            <h2 className="text-2xl font-serif font-bold text-white uppercase tracking-widest">
-              {type === 'login' ? 'Chamber Login' : 'Register Profile'}
-            </h2>
-            <div className="h-0.5 w-12 bg-gradient-to-r from-yellow-700 to-yellow-400 mx-auto mt-4" />
-          </div>
-          <div className="space-y-5">
-            {type === 'signup' && (
-              <div>
-                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Advocate Name</label>
-                <input type="text" className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-sm text-white text-sm focus:outline-none focus:border-yellow-500/50 transition-all placeholder-slate-600" placeholder="e.g. Ali Khan, Advocate" />
+  const AuthPage = ({ type }) => {
+    const [email, setEmail] = useState('');
+    const [password, setPassword] = useState('');
+    const [fullName, setFullName] = useState('');
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState('');
+
+    const handleSubmit = async () => {
+      if (!email || !password) {
+        setError('Please fill in all fields');
+        return;
+      }
+
+      setLoading(true);
+      setError('');
+
+      try {
+        let result;
+        
+        if (type === 'login') {
+          result = await api.login(email, password);
+        } else {
+          result = await api.signup(email, password, fullName);
+        }
+
+        if (result.status === 'ok') {
+          login(result.user);
+        } else {
+          setError(result.message || 'Authentication failed');
+        }
+      } catch (err) {
+        setError('Network error. Please try again.');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    const handleKeyPress = (e) => {
+      if (e.key === 'Enter') handleSubmit();
+    };
+
+    return (
+      <div className="min-h-[90vh] flex items-center justify-center px-4" style={{ background: 'linear-gradient(135deg,#03082E 0%,#0A1628 100%)' }}>
+        <div className="w-full max-w-md">
+          <div className="bg-white/[0.03] border border-white/10 rounded-sm p-10 shadow-2xl">
+            <div className="text-center mb-10">
+              <Scale className="w-12 h-12 text-yellow-500 mx-auto mb-4" />
+              <h2 className="text-2xl font-serif font-bold text-white uppercase tracking-widest">
+                {type === 'login' ? 'Chamber Login' : 'Register Profile'}
+              </h2>
+              <div className="h-0.5 w-12 bg-gradient-to-r from-yellow-700 to-yellow-400 mx-auto mt-4" />
+            </div>
+
+            {error && (
+              <div className="mb-6 flex items-center gap-2 text-xs text-red-300 bg-red-900/20 border border-red-700/20 rounded-sm p-3">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                {error}
               </div>
             )}
-            <div>
-              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Professional Email</label>
-              <input type="email" className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-sm text-white text-sm focus:outline-none focus:border-yellow-500/50 transition-all placeholder-slate-600" placeholder="name@lawfirm.com.pk" />
-            </div>
-            <div>
-              <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Password</label>
-              <input type="password" className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-sm text-white text-sm focus:outline-none focus:border-yellow-500/50 transition-all placeholder-slate-600" placeholder="••••••••" />
-            </div>
-            <button onClick={login} className="w-full bg-yellow-500 hover:bg-yellow-400 py-4 text-xs font-bold tracking-widest uppercase rounded-sm transition-all shadow-lg shadow-yellow-500/20 mt-2" style={{ color: '#0A1628' }}>
-              {type === 'login' ? 'Authenticate' : 'Submit Application'}
-            </button>
-          </div>
-          <div className="mt-8 text-center border-t border-white/8 pt-6">
-            <p className="text-sm text-slate-500">
-              {type === 'login' ? 'Not registered? ' : 'Have chamber access? '}
-              <button onClick={() => navigate(type === 'login' ? 'signup' : 'login')} className="text-yellow-400 hover:text-yellow-300 font-bold transition-colors">
-                {type === 'login' ? 'Apply Here' : 'Log In'}
+
+            <div className="space-y-5">
+              {type === 'signup' && (
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Advocate Name</label>
+                  <input
+                    type="text"
+                    value={fullName}
+                    onChange={e => setFullName(e.target.value)}
+                    onKeyPress={handleKeyPress}
+                    className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-sm text-white text-sm focus:outline-none focus:border-yellow-500/50 transition-all placeholder-slate-600"
+                    placeholder="e.g. Ali Khan, Advocate"
+                    disabled={loading}
+                  />
+                </div>
+              )}
+              <div>
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Professional Email</label>
+                <input
+                  type="email"
+                  value={email}
+                  onChange={e => setEmail(e.target.value)}
+                  onKeyPress={handleKeyPress}
+                  className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-sm text-white text-sm focus:outline-none focus:border-yellow-500/50 transition-all placeholder-slate-600"
+                  placeholder={type === 'login' ? 'advocate@legal-sahara.com' : 'name@lawfirm.com.pk'}
+                  disabled={loading}
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Password</label>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  onKeyPress={handleKeyPress}
+                  className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-sm text-white text-sm focus:outline-none focus:border-yellow-500/50 transition-all placeholder-slate-600"
+                  placeholder="••••••••"
+                  disabled={loading}
+                />
+              </div>
+
+              {type === 'login' && (
+                <div className="text-xs text-slate-500 bg-white/5 border border-white/10 rounded-sm p-3 mt-4">
+                  <p className="font-semibold text-yellow-600 mb-2">📝 Test Account:</p>
+                  <p>Email: advocate@legal-sahara.com</p>
+                  <p>Password: demo123</p>
+                </div>
+              )}
+
+              <button
+                onClick={handleSubmit}
+                disabled={loading}
+                className="w-full bg-yellow-500 hover:bg-yellow-400 disabled:opacity-50 py-4 text-xs font-bold tracking-widest uppercase rounded-sm transition-all shadow-lg shadow-yellow-500/20 mt-2"
+                style={{ color: '#0A1628' }}>
+                {loading
+                  ? <span className="flex items-center justify-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Authenticating…</span>
+                  : type === 'login' ? 'Authenticate' : 'Submit Application'}
               </button>
-            </p>
-            <button onClick={login} className="mt-4 text-xs text-slate-600 hover:text-slate-400 transition-colors underline underline-offset-2">
-              Skip login (demo mode)
-            </button>
+            </div>
+
+            <div className="mt-8 text-center border-t border-white/8 pt-6">
+              <p className="text-sm text-slate-500">
+                {type === 'login' ? 'Not registered? ' : 'Have chamber access? '}
+                <button onClick={() => navigate(type === 'login' ? 'signup' : 'login')} className="text-yellow-400 hover:text-yellow-300 font-bold transition-colors">
+                  {type === 'login' ? 'Apply Here' : 'Log In'}
+                </button>
+              </p>
+            </div>
           </div>
         </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   // ── Workspace ─────────────────────────────────────────────────────────────────
   const Workspace = () => {
@@ -350,10 +541,12 @@ export default function App() {
           <div className="p-5 border-b border-white/5">
             <p className="text-[10px] font-bold text-slate-600 uppercase tracking-widest mb-4">User Profile</p>
             <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-sm flex items-center justify-center font-serif font-bold text-yellow-400 text-sm border border-yellow-600/30" style={{ background: 'rgba(184,134,11,0.1)' }}>AK</div>
+              <div className="w-9 h-9 rounded-sm flex items-center justify-center font-serif font-bold text-yellow-400 text-sm border border-yellow-600/30" style={{ background: 'rgba(184,134,11,0.1)' }}>
+                {currentUser?.full_name?.split(' ').map(n => n[0]).join('') || 'AK'}
+              </div>
               <div>
-                <p className="text-sm font-semibold text-white">Adv. Ali Khan</p>
-                <p className="text-[10px] text-yellow-600 uppercase tracking-wider">Pro License</p>
+                <p className="text-sm font-semibold text-white">{currentUser?.full_name || 'Adv. Ali Khan'}</p>
+                <p className="text-[10px] text-yellow-600 uppercase tracking-wider">{currentUser?.license_type || 'Pro'} License</p>
               </div>
             </div>
           </div>
@@ -403,55 +596,46 @@ export default function App() {
     const [pdfLoading, setPdfLoading] = useState(false);
     const [copied,     setCopied]     = useState(false);
     const [meta,       setMeta]       = useState(null);
-    // ── NEW guardrail state ──────────────────────────────────────────────────
-    const [blockReason, setBlockReason] = useState('');   // non-empty = hard block
-    const [warnings,    setWarnings]    = useState([]);   // soft warning strings
-    // ────────────────────────────────────────────────────────────────────────
+    const [blockReason, setBlockReason] = useState('');
+    const [warnings,    setWarnings]    = useState([]);
     const chatEnd     = useRef(null);
     const textareaRef = useRef(null);
 
     useEffect(() => { chatEnd.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
     const addMsg = (role, text) => setMessages(prev => [...prev, { role, text }]);
-
-    // Remove the last N messages (used to clear "processing…" spinners)
     const dropLastN = (n) => setMessages(prev => prev.slice(0, prev.length - n));
 
     const handleSend = async () => {
       const story = input.trim();
       if (!story || loading) return;
 
-      // Reset guardrail state on each new submission
       setBlockReason('');
       setWarnings([]);
       setInput('');
       addMsg('user', story);
       setLoading(true);
 
-      // Three ephemeral "processing" messages
       addMsg('agent', '⚙️ Classifying case type and detecting jurisdiction...');
       addMsg('agent', '📚 Retrieving relevant precedents from indexed judgments...');
       addMsg('agent', '✍️ Drafting petition with applicable legal strategy...');
 
       try {
         const data = await api.draft(story);
+        console.log("📥 [DEBUG] Draft API Response:", data);
 
-        // ── HARD BLOCK ────────────────────────────────────────────────────
-        // Backend returns { status: "blocked", agent_reply: "<reason>" }
         if (data.status === 'blocked') {
           const reason =
+            data.guardrail_blocked_reason ||
             data.agent_reply ||
-            data.guardrail_summary?.block_reason ||
             'Your request was blocked. Please revise and try again.';
           dropLastN(3);
           setBlockReason(reason);
-          addMsg('blocked', reason);   // special role rendered as red bubble
+          addMsg('blocked', reason);
           setLoading(false);
           return;
         }
 
-        // ── NEEDS MORE INFO ───────────────────────────────────────────────
-        // Backend returns { status: "ok", needs_info: true, agent_reply: "…" }
         if (data.needs_info) {
           dropLastN(3);
           addMsg('agent', data.agent_reply || 'Please provide more details.');
@@ -459,7 +643,6 @@ export default function App() {
           return;
         }
 
-        // ── API / SERVER ERROR ────────────────────────────────────────────
         if (data.status === 'error') {
           dropLastN(3);
           addMsg('agent', `⚠️ ${data.result || 'An error occurred. Please check the backend is running and ChromaDB is populated.'}`);
@@ -467,9 +650,7 @@ export default function App() {
           return;
         }
 
-        // ── SUCCESS ───────────────────────────────────────────────────────
         if (data.result) {
-          // Soft guardrail warnings — petition still generated
           const w = data.guardrail_warnings || [];
           setWarnings(w);
 
@@ -496,6 +677,7 @@ export default function App() {
         }
 
       } catch (err) {
+        console.error("❌ Draft error:", err);
         dropLastN(3);
         addMsg('agent', '❌ Network error. Please ensure the backend server is running on port 8000.');
       } finally {
@@ -594,14 +776,13 @@ export default function App() {
                   msg.role === 'user'
                     ? 'text-white border border-blue-700/30'
                     : msg.role === 'blocked'
-                      ? 'text-red-300 border border-red-700/40'   // ← RED bubble for block
+                      ? 'text-red-300 border border-red-700/40'
                       : 'text-slate-300 border border-white/5'
                 }`} style={
                   msg.role === 'user'    ? { background: 'rgba(38,83,168,0.35)' }  :
-                  msg.role === 'blocked' ? { background: 'rgba(153,44,44,0.25)' }  :  // ← dark red bg
+                  msg.role === 'blocked' ? { background: 'rgba(153,44,44,0.25)' }  :
                                           { background: 'rgba(255,255,255,0.03)' }
                 }>
-                  {/* Hard-block label */}
                   {msg.role === 'blocked' && (
                     <span className="block text-[10px] font-bold uppercase tracking-widest text-red-400 mb-1.5">
                       ⛔ Request Blocked
@@ -672,9 +853,7 @@ export default function App() {
             </div>
           </div>
 
-          {/* ── HARD BLOCK BANNER ─────────────────────────────────────────────
-              Shows above the A4 area when status === "blocked".
-              Replaces the empty doc state so it's immediately visible.          */}
+          {/* Hard block banner */}
           {blockReason && (
             <div className="mx-6 mt-5 flex items-start gap-3 rounded-sm px-5 py-4 border"
                  style={{ background: 'rgba(153,44,44,0.18)', borderColor: 'rgba(240,149,149,0.3)' }}>
@@ -689,8 +868,7 @@ export default function App() {
             </div>
           )}
 
-          {/* ── SOFT WARNINGS BANNER ──────────────────────────────────────────
-              Shows above the petition when warnings exist but doc was generated. */}
+          {/* Soft warnings banner */}
           {warnings.length > 0 && doc && (
             <div className="mx-6 mt-5 flex items-start gap-3 rounded-sm px-5 py-4 border"
                  style={{ background: 'rgba(186,117,23,0.15)', borderColor: 'rgba(250,199,117,0.35)' }}>
@@ -868,11 +1046,13 @@ export default function App() {
 
   // ── Summarizer Agent ──────────────────────────────────────────────────────────
   const SummarizerAgent = () => {
-    const [file,    setFile]    = useState(null);
-    const [result,  setResult]  = useState('');
-    const [loading, setLoading] = useState(false);
-    const [error,   setError]   = useState('');
-    const [dragOver, setDragOver] = useState(false);
+    const [file,           setFile]           = useState(null);
+    const [result,         setResult]         = useState('');
+    const [loading,        setLoading]        = useState(false);
+    const [error,          setError]          = useState('');
+    const [blockReason,    setBlockReason]    = useState('');
+    const [acceptedTypes,  setAcceptedTypes]  = useState([]);
+    const [dragOver,       setDragOver]       = useState(false);
     const fileRef = useRef(null);
 
     const handleFile = (f) => {
@@ -884,18 +1064,50 @@ export default function App() {
         setError('Unsupported file type. Upload PDF, DOCX, TXT, PNG, or JPG.');
         return;
       }
-      setFile(f); setError('');
+      setFile(f);
+      setError('');
+      setBlockReason('');
+      setAcceptedTypes([]);
+      setResult('');
     };
 
     const submit = async () => {
       if (!file || loading) return;
-      setLoading(true); setError(''); setResult('');
+      setLoading(true);
+      setError('');
+      setResult('');
+      setBlockReason('');
+      setAcceptedTypes([]);
+
       try {
         const data = await api.summarize(file);
-        if (data.status === 'ok') setResult(data.result);
-        else setError(data.result || 'Summarization failed.');
-      } catch { setError('Network error.'); }
-      finally { setLoading(false); }
+
+        // ── Check if document was blocked by guardrail ────────────────────────
+        if (data.status === 'blocked') {
+          const reason = data.guardrail_blocked_reason || 'This document cannot be processed.';
+          const types = data.accepted_document_types || [];
+          
+          setBlockReason(reason);
+          setAcceptedTypes(types);
+          setError('');
+          setResult('');
+          setLoading(false);
+          return;
+        }
+
+        // ── Success ────────────────────────────────────────────────────────────
+        if (data.status === 'ok') {
+          setResult(data.result);
+          setBlockReason('');
+          setAcceptedTypes([]);
+        } else {
+          setError(data.result || 'Summarization failed.');
+        }
+      } catch (err) {
+        setError('Network error.');
+      } finally {
+        setLoading(false);
+      }
     };
 
     return (
@@ -940,7 +1152,7 @@ export default function App() {
                   </div>
                 )}
               </div>
-              {error && (
+              {error && !blockReason && (
                 <div className="flex items-center gap-2 mt-4 text-xs text-red-300 bg-red-900/20 border border-red-700/20 rounded-sm p-3">
                   <AlertCircle className="w-4 h-4 shrink-0" />{error}
                 </div>
@@ -954,22 +1166,39 @@ export default function App() {
               </button>
             </div>
           </div>
-          {result && (
-            <div className="mt-8 bg-white/[0.03] border border-white/10 rounded-sm overflow-hidden">
-              <div className="px-5 py-3 border-b border-white/8 flex items-center justify-between" style={{ background: 'rgba(38,83,168,0.15)' }}>
-                <div className="flex items-center gap-2">
-                  <FileCheck2 className="w-4 h-4 text-yellow-400" />
-                  <span className="text-xs font-bold text-white uppercase tracking-wider">Legal Memo</span>
+
+          {/* ── DISPLAY GUARDRAIL MESSAGE IN WHITE PAPER AREA ───────────────── */}
+          {blockReason && (
+            <div className="mt-8 bg-white shadow-2xl min-h-[400px] p-12 rounded-sm border border-white/10"
+                 style={{ boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}>
+              <div className="flex items-start gap-4">
+                <AlertCircle className="w-8 h-8 text-red-500 shrink-0 mt-1" />
+                <div className="flex-1">
+                  <p className="text-sm text-slate-800 leading-relaxed whitespace-pre-wrap font-serif">
+                    {blockReason}
+                  </p>
                 </div>
-                <button onClick={() => downloadTxt(result, 'legal_memo.txt')}
-                  className="text-[10px] text-slate-500 hover:text-white flex items-center gap-1 transition-colors">
-                  <Download className="w-3 h-3" /> Download .TXT
-                </button>
               </div>
-              <div className="p-6">
-                <pre className="text-sm text-slate-300 leading-relaxed whitespace-pre-wrap"
-                     style={{ fontFamily: "'IBM Plex Mono',monospace", fontSize: '11px' }}>{result}</pre>
+            </div>
+          )}
+
+          {/* ── DISPLAY LEGAL MEMO IN WHITE PAPER AREA ───────────────────── */}
+          {result && !blockReason && (
+            <div className="mt-8 bg-white shadow-2xl min-h-[1123px] p-[72px] rounded-sm border border-white/10"
+                 style={{ boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}>
+              <div className="flex items-start justify-between mb-6">
+                <div>
+                  <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">Legal Memo</span>
+                  <button onClick={() => downloadTxt(result, 'legal_memo.txt')}
+                    className="text-[10px] text-slate-500 hover:text-slate-800 flex items-center gap-1 transition-colors mt-2">
+                    <Download className="w-3 h-3" /> Download .TXT
+                  </button>
+                </div>
               </div>
+              <pre className="text-sm text-slate-800 leading-relaxed whitespace-pre-wrap"
+                   style={{ fontFamily: "'Times New Roman', Georgia, serif" }}>
+                {result}
+              </pre>
             </div>
           )}
         </div>

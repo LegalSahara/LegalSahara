@@ -7,6 +7,8 @@ Fixes applied:
   - TypedDict uses proper typing.Any
   - Node functions return update dicts (LangGraph best practice)
   - evaluate_summary uses fallback LLM to avoid rate-limit crashes
+  - validate_input guardrail node added (hard block on non-legal docs)
+  - Guardrail rejection now includes accepted document types for user guidance
 """
 import os
 import time
@@ -43,6 +45,33 @@ OUTPUT_FOLDER  = os.path.join(BASE_DIR, "outputs")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
+# ── Guardrail config ──────────────────────────────────────────────────────────
+LEGAL_CONFIDENCE_THRESHOLD = 0.50
+MIN_WORD_COUNT             = 200
+LEGAL_KEYWORD_THRESHOLD    = 3
+
+ACCEPTED_DOCUMENT_TYPES = [
+    "Court opinions & judgments",
+    "Petitions & appeals",
+    "Contracts & agreements",
+    "Statutes & regulations",
+    "Affidavits & sworn statements",
+    "Supreme Court filings",
+]
+
+_LEGAL_KEYWORDS = [
+    "plaintiff", "defendant", "appellant", "respondent", "petitioner",
+    "court", "tribunal", "judge", "justice", "judgment", "judgement",
+    "verdict", "ruling", "order", "decree", "statute", "section",
+    "whereas", "hereinafter", "indemnify", "liability", "damages",
+    "injunction", "affidavit", "sworn", "notarized", "counsel",
+    "attorney", "solicitor", "barrister", "advocate", "prosecution",
+    "acquittal", "conviction", "bail", "warrant", "subpoena",
+    "contract", "clause", "agreement", "legislation", "regulation",
+    "ordinance", "precedent", "ratio", "obiter", "per curiam",
+    "appeal", "bench", "bar", "petition", "writ", "habeas",
+]
+
 
 # ── LLM helpers (defined FIRST so all functions below can use them) ────────────
 
@@ -74,8 +103,6 @@ def _invoke_with_retry(chain, inputs: dict, max_retries: int = MAX_RETRIES):
             raise
 
 
-# Lazy-initialised module-level LLM — avoids crash if GROQ_API_KEY is absent at
-# import time in environments where dotenv loads later.
 _llm: Optional[ChatGroq] = None
 
 
@@ -89,20 +116,26 @@ def _llm_instance() -> ChatGroq:
 # ── State ─────────────────────────────────────────────────────────────────────
 
 class LegalDocumentState(TypedDict):
-    document_text:            str
-    document_metadata:        Dict[str, str]
-    extraction_info:          Dict[str, Any]
-    classification:           str
+    document_text:             str
+    document_metadata:         Dict[str, str]
+    extraction_info:           Dict[str, Any]
+    # ── guardrail fields (new) ────────────────────────────────────────────────
+    guardrail_passed:          bool   # False = hard block, skip all pipeline nodes
+    guardrail_blocked_reason:  str    # user-facing message shown on the frontend
+    guardrail_detected_type:   str    # e.g. "recipe", "news article"
+    accepted_document_types:   List[str]  # list of accepted types for user guidance
+    # ─────────────────────────────────────────────────────────────────────────
+    classification:            str
     classification_confidence: float
-    extracted_facts:          str
-    extracted_issues:         str
-    extracted_holding:        str
-    extracted_reasoning:      str
-    extracted_ratio:          str
-    final_memo:               str
-    evaluation_score:         Dict[str, Any]
-    errors:                   List[str]
-    processing_time:          Dict[str, float]
+    extracted_facts:           str
+    extracted_issues:          str
+    extracted_holding:         str
+    extracted_reasoning:       str
+    extracted_ratio:           str
+    final_memo:                str
+    evaluation_score:          Dict[str, Any]
+    errors:                    List[str]
+    processing_time:           Dict[str, float]
 
 
 # ── Text extraction helpers ───────────────────────────────────────────────────
@@ -195,10 +228,129 @@ def extract_text_from_file(file_path: str,
     return result
 
 
+# ── GUARDRAIL NODE ────────────────────────────────────────────────────────────
+
+def _heuristic_legal_check(text: str) -> bool:
+    """Fast keyword scan — if enough legal terms found, skip the LLM call."""
+    sample = text[:5000].lower()
+    hits   = sum(1 for kw in _LEGAL_KEYWORDS if kw in sample)
+    print(f"   🔍 Heuristic: {hits} legal keyword(s) matched")
+    return hits >= LEGAL_KEYWORD_THRESHOLD
+
+
+def validate_input(state: LegalDocumentState) -> dict:
+    """
+    Hard-block guardrail node — runs before all analysis nodes.
+    If any check fails, guardrail_passed = False and every downstream
+    node will no-op via _is_blocked(), returning immediately without
+    making any LLM calls.
+    """
+    t0   = time.time()
+    text = state["document_text"]
+    print("\n🛡️  [Guardrail] Validating document...")
+
+    # Check 1: minimum word count
+    word_count = len(text.split())
+    print(f"   📏 Word count: {word_count}")
+    if word_count < MIN_WORD_COUNT:
+        msg = (
+            f"This document cannot be processed.\n\n"
+            f"The document you uploaded is too short to analyse ({word_count} words). "
+            f"Please upload a complete legal document of at least {MIN_WORD_COUNT} words."
+        )
+        print("   🚨 BLOCKED — too short")
+        return {
+            "guardrail_passed":         False,
+            "guardrail_blocked_reason": msg,
+            "guardrail_detected_type":  "too short",
+            "accepted_document_types":  ACCEPTED_DOCUMENT_TYPES,
+            "processing_time": {**state.get("processing_time", {}), "guardrail": time.time() - t0},
+        }
+
+    # Check 2: heuristic keyword fast-path — skip LLM if clearly legal
+    if _heuristic_legal_check(text):
+        print("   ✅ Heuristic passed — document appears legal")
+        return {
+            "guardrail_passed":         True,
+            "guardrail_blocked_reason": "",
+            "guardrail_detected_type":  "",
+            "accepted_document_types":  ACCEPTED_DOCUMENT_TYPES,
+            "processing_time": {**state.get("processing_time", {}), "guardrail": time.time() - t0},
+        }
+
+    # Check 3: LLM classification for ambiguous documents
+    guard_llm = _get_llm(use_fallback=True, temperature=0)
+    prompt = ChatPromptTemplate.from_template(
+        "You are a document-type classifier. Decide whether the text is a legal document.\n\n"
+        "Legal documents: court opinions, contracts, statutes, regulations, briefs, "
+        "affidavits, petitions, writs, judgments, deeds, powers of attorney.\n\n"
+        "Non-legal: news articles, recipes, fiction, academic papers (non-law), "
+        "medical records, manuals, social media, emails, reports.\n\n"
+        "Return ONLY JSON — no markdown, no backticks:\n"
+        '{{"is_legal":true,"confidence":0.92,"document_hint":"contract",'
+        '"reason":"One sentence reason."}}\n\n'
+        "DOCUMENT (first 2000 chars):\n{document_text}"
+    )
+    chain = prompt | guard_llm | StrOutputParser()
+
+    is_legal   = True
+    confidence = 0.5
+    hint       = "unknown"
+
+    try:
+        raw = _invoke_with_retry(chain, {"document_text": text[:2000]}, max_retries=2)
+        raw = raw.strip().removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        res        = json.loads(raw)
+        is_legal   = bool(res.get("is_legal", True))
+        confidence = float(res.get("confidence", 0.5))
+        hint       = res.get("document_hint", "unknown")
+        print(f"   🤖 LLM: is_legal={is_legal}, confidence={confidence:.2f}, hint='{hint}'")
+    except Exception as e:
+        print(f"   ⚠️  LLM check failed (defaulting to pass): {e}")
+
+    blocked = (not is_legal) or (confidence < LEGAL_CONFIDENCE_THRESHOLD)
+
+    if blocked:
+        article = "an" if hint and hint[0].lower() in "aeiou" else "a"
+        msg = (
+            f"This document cannot be processed.\n\n"
+            f"This tool is designed for legal documents only. "
+            f"The file you uploaded appears to be {article} {hint}.\n\n"
+            f"Accepted document types:\n"
+        )
+        for doc_type in ACCEPTED_DOCUMENT_TYPES:
+            msg += f"• {doc_type}\n"
+        msg += f"\nPlease upload a valid legal document to continue."
+        
+        print(f"   🚨 BLOCKED — not a legal document (hint: {hint})")
+        return {
+            "guardrail_passed":         False,
+            "guardrail_blocked_reason": msg,
+            "guardrail_detected_type":  hint,
+            "accepted_document_types":  ACCEPTED_DOCUMENT_TYPES,
+            "processing_time": {**state.get("processing_time", {}), "guardrail": time.time() - t0},
+        }
+
+    print("   ✅ All guardrail checks passed")
+    return {
+        "guardrail_passed":         True,
+        "guardrail_blocked_reason": "",
+        "guardrail_detected_type":  "",
+        "accepted_document_types":  ACCEPTED_DOCUMENT_TYPES,
+        "processing_time": {**state.get("processing_time", {}), "guardrail": time.time() - t0},
+    }
+
+
+def _is_blocked(state: LegalDocumentState) -> bool:
+    return not state.get("guardrail_passed", True)
+
+
 # ── LangGraph node functions ──────────────────────────────────────────────────
 # Each function returns a dict of ONLY the keys it wants to update (best practice).
 
 def classify_document(state: LegalDocumentState) -> dict:
+    if _is_blocked(state):
+        return {}
     t0 = time.time()
     print("📋 [Classifier] Classifying document...")
 
@@ -240,6 +392,8 @@ def classify_document(state: LegalDocumentState) -> dict:
 
 
 def extract_facts(state: LegalDocumentState) -> dict:
+    if _is_blocked(state):
+        return {}
     t0 = time.time()
     print("📝 [Facts] Extracting key facts...")
 
@@ -278,6 +432,8 @@ def extract_facts(state: LegalDocumentState) -> dict:
 
 
 def extract_issues(state: LegalDocumentState) -> dict:
+    if _is_blocked(state):
+        return {}
     t0 = time.time()
     print("⚖️  [Issues] Identifying legal issues...")
 
@@ -310,6 +466,8 @@ def extract_issues(state: LegalDocumentState) -> dict:
 
 
 def extract_holding(state: LegalDocumentState) -> dict:
+    if _is_blocked(state):
+        return {}
     t0 = time.time()
     print("🔨 [Holding] Extracting court decision...")
 
@@ -340,6 +498,8 @@ def extract_holding(state: LegalDocumentState) -> dict:
 
 
 def extract_reasoning(state: LegalDocumentState) -> dict:
+    if _is_blocked(state):
+        return {}
     t0 = time.time()
     print("🧠 [Reasoning] Analyzing legal reasoning...")
 
@@ -373,6 +533,8 @@ def extract_reasoning(state: LegalDocumentState) -> dict:
 
 
 def extract_ratio(state: LegalDocumentState) -> dict:
+    if _is_blocked(state):
+        return {}
     t0 = time.time()
     print("📜 [Ratio] Identifying ratio decidendi...")
 
@@ -403,6 +565,8 @@ def extract_ratio(state: LegalDocumentState) -> dict:
 
 
 def synthesize_memo(state: LegalDocumentState) -> dict:
+    if _is_blocked(state):
+        return {}
     t0 = time.time()
     print("📝 [Synthesizer] Creating legal memo...")
 
@@ -450,10 +614,11 @@ def synthesize_memo(state: LegalDocumentState) -> dict:
 
 
 def evaluate_summary(state: LegalDocumentState) -> dict:
+    if _is_blocked(state):
+        return {}
     t0 = time.time()
     print("⚖️  [Judge] Evaluating memo quality...")
 
-    # Use fast fallback model to avoid Groq rate limits on long sessions
     eval_llm = _get_llm(use_fallback=True, temperature=0.1)
 
     prompt = ChatPromptTemplate.from_template(
@@ -514,10 +679,11 @@ def evaluate_summary(state: LegalDocumentState) -> dict:
     }
 
 
-# ── LangGraph workflow ────────────────────────────────────────────────────────
+#    ─ LangGraph workflow ────────────────────────────────────────────────────────
 
 def _build_workflow() -> StateGraph:
     wf = StateGraph(LegalDocumentState)
+    wf.add_node("validate_input",    validate_input)      # ← new guardrail entry point
     wf.add_node("classify",          classify_document)
     wf.add_node("extract_facts",     extract_facts)
     wf.add_node("extract_issues",    extract_issues)
@@ -527,7 +693,8 @@ def _build_workflow() -> StateGraph:
     wf.add_node("synthesize",        synthesize_memo)
     wf.add_node("evaluate",          evaluate_summary)
 
-    wf.set_entry_point("classify")
+    wf.set_entry_point("validate_input")           # ← was "classify"
+    wf.add_edge("validate_input",    "classify")   # ← new edge
     wf.add_edge("classify",          "extract_facts")
     wf.add_edge("extract_facts",     "extract_issues")
     wf.add_edge("extract_issues",    "extract_holding")
@@ -539,7 +706,6 @@ def _build_workflow() -> StateGraph:
     return wf.compile()
 
 
-# Compiled once at import (functions are already defined above)
 _app = _build_workflow()
 print("✅ Summarizer workflow compiled")
 
@@ -551,6 +717,13 @@ def process_uploaded_document(file_path: str,
     """
     Extract text from a legal document file and run the full
     summarisation pipeline. Returns the final state dict.
+
+    Key fields in the returned dict:
+      guardrail_passed         (bool) — False = blocked, frontend shows error
+      guardrail_blocked_reason (str)  — user-facing message when blocked
+      accepted_document_types  (list) — accepted document types for user guidance
+      final_memo               (str)  — structured memo (only when passed)
+      document_metadata        (dict) — filename, jurisdiction, page_count
     """
     print("\n" + "=" * 60)
     print("🏛️  LEGAL DOCUMENT SUMMARISER")
@@ -567,8 +740,17 @@ def process_uploaded_document(file_path: str,
     except Exception as e:
         print(f"\n❌ Extraction failed: {e}")
         return {
-            "errors":     [f"Text extraction failed: {e}"],
-            "final_memo": "Error: could not extract text from document.",
+            "guardrail_passed":         False,
+            "guardrail_blocked_reason": (
+                "This document cannot be processed.\n\n"
+                "We were unable to extract readable text from your file. "
+                "Please ensure the document is not password-protected or corrupted, "
+                "and try again."
+            ),
+            "guardrail_detected_type":  "unreadable file",
+            "accepted_document_types":  ACCEPTED_DOCUMENT_TYPES,
+            "final_memo":               "",
+            "errors":                   [f"Text extraction failed: {e}"],
         }
 
     # 2. Build initial state
@@ -584,6 +766,10 @@ def process_uploaded_document(file_path: str,
             "confidence": extraction['confidence'],
             "warnings":   extraction['warnings'],
         },
+        "guardrail_passed":          True,
+        "guardrail_blocked_reason":  "",
+        "guardrail_detected_type":   "",
+        "accepted_document_types":   ACCEPTED_DOCUMENT_TYPES,
         "classification":            "",
         "classification_confidence": 0.0,
         "extracted_facts":           "",
@@ -602,6 +788,10 @@ def process_uploaded_document(file_path: str,
         print("\n🔄 Starting analysis pipeline...\n")
         result = _app.invoke(initial)
         result["processing_time"]["total"] = time.time() - overall_start
+
+        if not result.get("guardrail_passed", True):
+            print(f"\n🚫 Pipeline blocked: {result['guardrail_blocked_reason']}")
+
         return result
     except Exception as e:
         print(f"\n❌ Workflow error: {e}")
