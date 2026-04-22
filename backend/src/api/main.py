@@ -117,16 +117,61 @@ async def verify_token(current_user: dict = Depends(get_current_user)):
     }
 
 # ── RAG: Precedent Search ─────────────────────────────────────────────────────
+from src.rag.guardrails import (
+    run_input_guardrails,
+    run_output_guardrails,
+    summarise_guardrail_results,
+)
+
 @app.post("/rag")
 async def rag_query(
     query: str = Form(...),
     current_user: dict = Depends(get_current_user)
 ):
+    user_id = current_user["id"]
+
+    # ── Input guardrails ──────────────────────────────────────────────────────
+    input_results = run_input_guardrails(query, user_id=user_id)
+    input_summary = summarise_guardrail_results(input_results)
+
+    if input_summary["is_blocked"]:
+        return {
+            "status":  "blocked",
+            "result":  input_summary["block_reason"],
+            "guardrail_summary": input_summary,
+        }
+
+    # Truncate if warned
+    if len(query) > 1000:
+        query = query[:1000]
+
+    # ── Run RAG ───────────────────────────────────────────────────────────────
     try:
+        # Detect agent type from query for output guardrails
+        agent_type = "case_search" if any(
+            w in query.lower() for w in
+            ["find", "search", "show me", "cases about", "cases by", "cases from"]
+        ) else "qa"
+
         result = run_agentic_system(query)
-        return {"status": "ok", "result": result}
+
+        # ── Output guardrails ─────────────────────────────────────────────────
+        output_results = run_output_guardrails(result, agent_type=agent_type)
+        output_summary = summarise_guardrail_results(output_results)
+
+        return {
+            "status":  "ok",
+            "result":  result,
+            "guardrail_warnings": output_summary.get("warnings", []),
+            "guardrail_summary":  {
+                "input":  input_summary,
+                "output": output_summary,
+                "all_warnings": input_summary.get("warnings", []) + output_summary.get("warnings", []),
+            },
+        }
+
     except Exception as e:
-        return {"status": "error", "result": str(e)}
+        return {"status": "error", "result": str(e)}    
 
 # ── Drafter: Generate Petition Text ──────────────────────────────────────────
 @app.post("/draft")
