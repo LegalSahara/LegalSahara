@@ -23,14 +23,12 @@ class GuardrailResult:
     severity: str = "LOW"
     message:  str = ""
     details:  dict = field(default_factory=dict)
-    blocked:  bool = False          # True = HARD BLOCK — pipeline must stop
+    blocked:  bool = False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. INPUT GUARDRAILS
 # ─────────────────────────────────────────────────────────────────────────────
-
-# ── 1a. Query length ──────────────────────────────────────────────────────────
 
 def check_query_length(query: str) -> GuardrailResult:
     stripped   = query.strip()
@@ -53,7 +51,7 @@ def check_query_length(query: str) -> GuardrailResult:
     if len(stripped) > 1000:
         return GuardrailResult(
             passed=False, category="QUERY_TOO_LONG",
-            severity="LOW", blocked=False,          # soft-warn only
+            severity="LOW", blocked=False,
             message=(
                 f"Query is very long ({len(stripped)} chars). "
                 "Consider shortening for better results. "
@@ -68,7 +66,7 @@ def check_query_length(query: str) -> GuardrailResult:
     )
 
 
-# ── 1b. Rate limiting ─────────────────────────────────────────────────────────
+# ── Rate limiting ─────────────────────────────────────────────────────────────
 
 _USER_CALL_LOG: dict[str, list[float]] = {}
 _RATE_LIMIT_WINDOW = 3600
@@ -98,11 +96,7 @@ def check_rate_limit(user_id: str) -> GuardrailResult:
     )
 
 
-# ── 1c. Content safety ────────────────────────────────────────────────────────
-#
-#  FIXED: The LLM check now returns blocked=True (hard-block) when the
-#  model concludes is_legal_query=false.  Previously it returned
-#  blocked=False, which meant the pipeline continued regardless.
+# ── Content safety ────────────────────────────────────────────────────────────
 
 _HARMFUL_PATTERNS = [
     r'\b(how\s+to\s+(kill|bomb|shoot|poison|hack|exploit))\b',
@@ -111,45 +105,20 @@ _HARMFUL_PATTERNS = [
     r'\b(drug\s+(trafficking|smuggling|synthesis))\b',
 ]
 
-# Words that strongly indicate a genuine legal research query.
-# If ≥ 2 are present we skip the expensive LLM check.
-_LEGAL_SIGNALS = [
-    'section', 'article', 'ppc', 'crpc', 'court', 'judge', 'justice',
-    'bail', 'petition', 'fir', 'appeal', 'case', 'judgment', 'ruling',
-    'arrest', 'detention', 'constitution', 'ordinance', 'act', 'law',
-    'plaintiff', 'defendant', 'petitioner', 'respondent', 'advocate',
-    'supreme court', 'high court', 'sessions', 'tribunal', 'cases',
-    'find', 'search', 'what', 'why', 'how', 'when', 'who', 'did',
-]
-
-# Phrases that are clearly off-topic for a legal research tool.
-# Any match → hard-block immediately (no LLM call needed).
-_CLEARLY_NON_LEGAL = [
-    r'\bwho is (the )?(pm|prime minister|president|ceo|coo|cto)\b',
-    r'\bwhat is (the )?(weather|temperature|time|date|capital of)\b',
-    r'\b(recipe|ingredient|cook|bake|restaurant)\b',
-    r'\b(cricket|football|match|score|ipl|psl|world cup)\b',
-    r'\b(movie|film|actor|actress|song|album|singer)\b',
-    r'\b(stock price|crypto|bitcoin|forex|exchange rate)\b',
-]
-
 
 def check_content_safety(query: str) -> GuardrailResult:
     """
     Hard-block non-legal and harmful queries.
-    Returns blocked=True for anything that should stop the RAG pipeline.
+
+    Flow:
+      1. Regex hard-block for clearly harmful content (fast, no LLM needed)
+      2. LLM check — runs ALWAYS for everything else.
+         The LLM is the source of truth; word-count heuristics are not used
+         because common words like 'how', 'what', 'who' were causing false passes.
     """
     text_lower = query.lower()
 
-    # 1. Fast pass — strong legal signals present → safe
-    legal_hits = sum(1 for sig in _LEGAL_SIGNALS if sig in text_lower)
-    if legal_hits >= 2:
-        return GuardrailResult(
-            passed=True, category="CONTENT_SAFETY",
-            message=f"Legal signals detected ({legal_hits}), content safe."
-        )
-
-    # 2. Harmful content regex → hard-block
+    # 1. Harmful content regex → hard-block immediately, no LLM needed
     for pat in _HARMFUL_PATTERNS:
         if re.search(pat, text_lower):
             return GuardrailResult(
@@ -162,56 +131,54 @@ def check_content_safety(query: str) -> GuardrailResult:
                 )
             )
 
-    # 3. Clearly off-topic patterns → hard-block (no LLM call needed)
-    for pat in _CLEARLY_NON_LEGAL:
-        if re.search(pat, text_lower):
+    # 2. LLM check — always runs
+    try:
+        resp = _groq.chat.completions.create(
+            model=_FAST_MODEL,
+            messages=[{"role": "user", "content": f"""
+You are a content filter for a Pakistani Supreme Court legal research tool.
+
+Decide if this query is a legitimate Pakistani legal research query.
+
+PASS if the query is about:
+- Court cases, judgments, or legal proceedings
+- Statutes, sections, articles, or constitutional provisions
+- Legal principles, doctrines, or procedures
+- Specific case searches (by judge, party, year, citation)
+- Legal questions about bail, arrest, FIR, petition, writ, habeas corpus, etc.
+- How a law or legal process works in Pakistan
+
+BLOCK if the query is about:
+- General knowledge, politics, current events, sports, entertainment
+- How to become a politician or public figure
+- Anything unrelated to Pakistani law or court proceedings
+- Harmful or illegal activities
+
+QUERY: "{query[:500]}"
+
+Return ONLY JSON:
+{{"is_legal_query": true/false, "reason": "one concise sentence"}}
+"""}],
+            response_format={"type": "json_object"},
+            temperature=0,
+            timeout=8,
+        )
+        result = json.loads(resp.choices[0].message.content)
+        if not result.get("is_legal_query", True):
+            reason = result.get("reason", "Non-legal content detected.")
             return GuardrailResult(
                 passed=False, category="CONTENT_SAFETY",
-                severity="HIGH", blocked=True,        # ← HARD BLOCK
+                severity="HIGH", blocked=True,
                 message=(
-                    "This query does not appear to be related to Pakistani "
-                    "legal research. Please search for court cases, legal "
-                    "principles, statutes, or judgments."
+                    "This does not appear to be a legal research query. "
+                    f"Reason: {reason} "
+                    "Please search for Pakistani Supreme Court cases, "
+                    "legal principles, or statutes."
                 )
             )
-
-    # 4. LLM check for ambiguous queries with no clear legal signals
-    if legal_hits == 0:
-        try:
-            resp = _groq.chat.completions.create(
-                model=_FAST_MODEL,
-                messages=[{"role": "user", "content": f"""
-Is this a legitimate Pakistani legal research query?
-Legal queries ask about: court cases, statutes, judgments, legal principles,
-constitutional provisions, FIRs, bail, petitions, or legal procedures.
-
-Non-legal queries ask about: politics, sports, weather, cooking, celebrities,
-general knowledge, current events, or anything unrelated to law.
-
-QUERY: "{query[:300]}"
-
-Return ONLY JSON: {{"is_legal_query": true/false, "reason": "one line"}}
-"""}],
-                response_format={"type": "json_object"},
-                temperature=0,
-                timeout=8,
-            )
-            result = json.loads(resp.choices[0].message.content)
-            if not result.get("is_legal_query", True):
-                reason = result.get("reason", "Non-legal content detected.")
-                return GuardrailResult(
-                    passed=False, category="CONTENT_SAFETY",
-                    severity="HIGH", blocked=True,    # ← HARD BLOCK (was False)
-                    message=(
-                        "This does not appear to be a legal research query. "
-                        f"Reason: {reason} "
-                        "Please search for Pakistani Supreme Court cases, "
-                        "legal principles, or statutes."
-                    )
-                )
-        except Exception as e:
-            # Fail-open: if LLM times out, let the query through
-            print(f"   ⚠️ Content safety LLM check failed (fail-open): {e}")
+    except Exception as e:
+        # Fail-open: if LLM times out, let the query through
+        print(f"   ⚠️ Content safety LLM check failed (fail-open): {e}")
 
     return GuardrailResult(
         passed=True, category="CONTENT_SAFETY",
@@ -219,7 +186,7 @@ Return ONLY JSON: {{"is_legal_query": true/false, "reason": "one line"}}
     )
 
 
-# ── 1d. Language check ────────────────────────────────────────────────────────
+# ── Language check ────────────────────────────────────────────────────────────
 
 def check_query_language(query: str) -> GuardrailResult:
     arabic_ratio = len(re.findall(r'[\u0600-\u06FF]', query)) / max(len(query), 1)
@@ -339,7 +306,7 @@ def run_input_guardrails(query: str,
             print(f"   {status} [{r.category}] {r.message[:80]}")
             if r.blocked:
                 print(f"   ⛔ BLOCKED at {name} — halting pipeline.")
-                break          # stop on first hard-block
+                break
         except Exception as e:
             print(f"   ⚠️  Guardrail '{name}' error (fail-open): {e}")
             results.append(GuardrailResult(
@@ -402,4 +369,4 @@ def summarise_guardrail_results(results: List[GuardrailResult]) -> dict:
     }
 
 
-print("✅ RAG guardrails loaded (v2 — non-legal queries hard-blocked)")
+print("✅ RAG guardrails loaded (LLM check always runs)")
