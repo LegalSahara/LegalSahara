@@ -1,27 +1,15 @@
-"""
-rag/guardrails.py
-=================
-Input and output guardrails for the Legal Sahara RAG pipeline.
-
-Input guardrails  — run before the query hits the planner
-Output guardrails — run before the answer is returned to the API
-
-All guardrails return GuardrailResult and never raise exceptions.
-Failures are surfaced as structured results — fail-open on errors.
-"""
-
 from __future__ import annotations
 
 import re
 import json
 import time
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List
 
 from groq import Groq
 from config import GROQ_API_KEY
 
-_groq       = Groq(api_key=GROQ_API_KEY)
+_groq= Groq(api_key=GROQ_API_KEY)
 _FAST_MODEL = "llama-3.1-8b-instant"
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -35,7 +23,7 @@ class GuardrailResult:
     severity: str = "LOW"
     message:  str = ""
     details:  dict = field(default_factory=dict)
-    blocked:  bool = False
+    blocked:  bool = False          # True = HARD BLOCK — pipeline must stop
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -65,10 +53,11 @@ def check_query_length(query: str) -> GuardrailResult:
     if len(stripped) > 1000:
         return GuardrailResult(
             passed=False, category="QUERY_TOO_LONG",
-            severity="LOW", blocked=False,
+            severity="LOW", blocked=False,          # soft-warn only
             message=(
                 f"Query is very long ({len(stripped)} chars). "
-                "Consider shortening for better results. Query will be truncated at 1000 chars."
+                "Consider shortening for better results. "
+                "Query will be truncated at 1000 chars."
             ),
             details={"truncated_at": 1000}
         )
@@ -82,8 +71,8 @@ def check_query_length(query: str) -> GuardrailResult:
 # ── 1b. Rate limiting ─────────────────────────────────────────────────────────
 
 _USER_CALL_LOG: dict[str, list[float]] = {}
-_RATE_LIMIT_WINDOW = 3600   # 1 hour
-_RATE_LIMIT_MAX    = 50     # max queries per user per hour
+_RATE_LIMIT_WINDOW = 3600
+_RATE_LIMIT_MAX    = 50
 
 
 def check_rate_limit(user_id: str) -> GuardrailResult:
@@ -110,6 +99,10 @@ def check_rate_limit(user_id: str) -> GuardrailResult:
 
 
 # ── 1c. Content safety ────────────────────────────────────────────────────────
+#
+#  FIXED: The LLM check now returns blocked=True (hard-block) when the
+#  model concludes is_legal_query=false.  Previously it returned
+#  blocked=False, which meant the pipeline continued regardless.
 
 _HARMFUL_PATTERNS = [
     r'\b(how\s+to\s+(kill|bomb|shoot|poison|hack|exploit))\b',
@@ -118,6 +111,8 @@ _HARMFUL_PATTERNS = [
     r'\b(drug\s+(trafficking|smuggling|synthesis))\b',
 ]
 
+# Words that strongly indicate a genuine legal research query.
+# If ≥ 2 are present we skip the expensive LLM check.
 _LEGAL_SIGNALS = [
     'section', 'article', 'ppc', 'crpc', 'court', 'judge', 'justice',
     'bail', 'petition', 'fir', 'appeal', 'case', 'judgment', 'ruling',
@@ -127,11 +122,26 @@ _LEGAL_SIGNALS = [
     'find', 'search', 'what', 'why', 'how', 'when', 'who', 'did',
 ]
 
+# Phrases that are clearly off-topic for a legal research tool.
+# Any match → hard-block immediately (no LLM call needed).
+_CLEARLY_NON_LEGAL = [
+    r'\bwho is (the )?(pm|prime minister|president|ceo|coo|cto)\b',
+    r'\bwhat is (the )?(weather|temperature|time|date|capital of)\b',
+    r'\b(recipe|ingredient|cook|bake|restaurant)\b',
+    r'\b(cricket|football|match|score|ipl|psl|world cup)\b',
+    r'\b(movie|film|actor|actress|song|album|singer)\b',
+    r'\b(stock price|crypto|bitcoin|forex|exchange rate)\b',
+]
+
 
 def check_content_safety(query: str) -> GuardrailResult:
+    """
+    Hard-block non-legal and harmful queries.
+    Returns blocked=True for anything that should stop the RAG pipeline.
+    """
     text_lower = query.lower()
 
-    # Fast pass — strong legal signals present
+    # 1. Fast pass — strong legal signals present → safe
     legal_hits = sum(1 for sig in _LEGAL_SIGNALS if sig in text_lower)
     if legal_hits >= 2:
         return GuardrailResult(
@@ -139,26 +149,44 @@ def check_content_safety(query: str) -> GuardrailResult:
             message=f"Legal signals detected ({legal_hits}), content safe."
         )
 
-    # Hard block on harmful patterns
+    # 2. Harmful content regex → hard-block
     for pat in _HARMFUL_PATTERNS:
         if re.search(pat, text_lower):
             return GuardrailResult(
                 passed=False, category="CONTENT_SAFETY",
                 severity="CRITICAL", blocked=True,
                 message=(
-                    "This query has been flagged as potentially harmful and cannot be processed. "
-                    "Legal Sahara is designed for legitimate legal research only."
+                    "This query has been flagged as potentially harmful and "
+                    "cannot be processed. Legal Sahara is designed for "
+                    "legitimate legal research only."
                 )
             )
 
-    # LLM check for ambiguous queries with no legal signals
+    # 3. Clearly off-topic patterns → hard-block (no LLM call needed)
+    for pat in _CLEARLY_NON_LEGAL:
+        if re.search(pat, text_lower):
+            return GuardrailResult(
+                passed=False, category="CONTENT_SAFETY",
+                severity="HIGH", blocked=True,        # ← HARD BLOCK
+                message=(
+                    "This query does not appear to be related to Pakistani "
+                    "legal research. Please search for court cases, legal "
+                    "principles, statutes, or judgments."
+                )
+            )
+
+    # 4. LLM check for ambiguous queries with no clear legal signals
     if legal_hits == 0:
         try:
             resp = _groq.chat.completions.create(
                 model=_FAST_MODEL,
                 messages=[{"role": "user", "content": f"""
-Is this a legitimate Pakistani legal research query (case law, statutes, court judgments, legal principles)?
-Or is it harmful, irrelevant, or unrelated to legal research?
+Is this a legitimate Pakistani legal research query?
+Legal queries ask about: court cases, statutes, judgments, legal principles,
+constitutional provisions, FIRs, bail, petitions, or legal procedures.
+
+Non-legal queries ask about: politics, sports, weather, cooking, celebrities,
+general knowledge, current events, or anything unrelated to law.
 
 QUERY: "{query[:300]}"
 
@@ -170,16 +198,19 @@ Return ONLY JSON: {{"is_legal_query": true/false, "reason": "one line"}}
             )
             result = json.loads(resp.choices[0].message.content)
             if not result.get("is_legal_query", True):
+                reason = result.get("reason", "Non-legal content detected.")
                 return GuardrailResult(
                     passed=False, category="CONTENT_SAFETY",
-                    severity="HIGH", blocked=True,
+                    severity="HIGH", blocked=True,    # ← HARD BLOCK (was False)
                     message=(
                         "This does not appear to be a legal research query. "
-                        f"Reason: {result.get('reason', 'Non-legal content detected.')} "
-                        "Please search for Pakistani Supreme Court cases, legal principles, or statutes."
+                        f"Reason: {reason} "
+                        "Please search for Pakistani Supreme Court cases, "
+                        "legal principles, or statutes."
                     )
                 )
         except Exception as e:
+            # Fail-open: if LLM times out, let the query through
             print(f"   ⚠️ Content safety LLM check failed (fail-open): {e}")
 
     return GuardrailResult(
@@ -212,8 +243,6 @@ def check_query_language(query: str) -> GuardrailResult:
 # 2. OUTPUT GUARDRAILS
 # ─────────────────────────────────────────────────────────────────────────────
 
-# ── 2a. Context insufficient check ───────────────────────────────────────────
-
 def check_context_insufficient(result: str) -> GuardrailResult:
     if not result or not result.strip():
         return GuardrailResult(
@@ -221,7 +250,6 @@ def check_context_insufficient(result: str) -> GuardrailResult:
             severity="HIGH", blocked=False,
             message="No result was generated. Please try rephrasing your query."
         )
-
     if "Context insufficient" in result and "Case Id: NONE" in result:
         return GuardrailResult(
             passed=False, category="CONTEXT_INSUFFICIENT",
@@ -232,14 +260,11 @@ def check_context_insufficient(result: str) -> GuardrailResult:
                 "case numbers, or judge names."
             )
         )
-
     return GuardrailResult(
         passed=True, category="CONTEXT_INSUFFICIENT",
         message="Result contains an answer."
     )
 
-
-# ── 2b. Answer format check ───────────────────────────────────────────────────
 
 def check_answer_format(result: str, agent_type: str) -> GuardrailResult:
     if agent_type != "qa":
@@ -247,10 +272,8 @@ def check_answer_format(result: str, agent_type: str) -> GuardrailResult:
             passed=True, category="ANSWER_FORMAT",
             message="Case search result — format check skipped."
         )
-
     required = ["Selected Case:", "Answer:", "Case Id:"]
     missing  = [r for r in required if r not in result]
-
     if missing:
         return GuardrailResult(
             passed=False, category="ANSWER_FORMAT",
@@ -258,14 +281,11 @@ def check_answer_format(result: str, agent_type: str) -> GuardrailResult:
             message=f"Answer format incomplete — missing: {', '.join(missing)}.",
             details={"missing_fields": missing}
         )
-
     return GuardrailResult(
         passed=True, category="ANSWER_FORMAT",
         message="Answer format OK."
     )
 
-
-# ── 2c. Hallucination signal check ────────────────────────────────────────────
 
 _HALLUCINATION_SIGNALS = [
     r'\bI cannot\b',
@@ -289,7 +309,6 @@ def check_hallucination_signals(result: str) -> GuardrailResult:
                     "Please verify this answer carefully."
                 )
             )
-
     return GuardrailResult(
         passed=True, category="HALLUCINATION_SIGNAL",
         message="No hallucination signals detected."
@@ -319,8 +338,8 @@ def run_input_guardrails(query: str,
             status = "✅" if r.passed else ("🚫" if r.blocked else "⚠️")
             print(f"   {status} [{r.category}] {r.message[:80]}")
             if r.blocked:
-                print(f"   ⛔ BLOCKED at {name} — halting.")
-                break
+                print(f"   ⛔ BLOCKED at {name} — halting pipeline.")
+                break          # stop on first hard-block
         except Exception as e:
             print(f"   ⚠️  Guardrail '{name}' error (fail-open): {e}")
             results.append(GuardrailResult(
@@ -383,4 +402,4 @@ def summarise_guardrail_results(results: List[GuardrailResult]) -> dict:
     }
 
 
-print("✅ RAG guardrails ready")
+print("✅ RAG guardrails loaded (v2 — non-legal queries hard-blocked)")
