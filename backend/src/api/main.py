@@ -1,6 +1,7 @@
 import os
+import json
 import shutil
-from datetime import timedelta
+from datetime import timedelta, datetime, timezone
 from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -10,7 +11,7 @@ from src.rag.graph import run_agentic_system
 from src.drafter.graph import run_legal_assistant
 from src.summarizer.graph import process_uploaded_document
 from src.drafter.pdf_generator import generate_petition_pdf
-from src.shared.database import get_db, init_db
+from src.shared.database import get_db, init_db, UserSession
 from src.shared.auth import (
     authenticate_user,
     create_access_token,
@@ -54,7 +55,8 @@ async def get_current_user(
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     return user
 
-# ── Health Check ─   ────────────────────────────────────────────────────────────
+
+# ── Health ────────────────────────────────────────────────────────────────────
 @app.get("/")
 async def root():
     return {"message": "Backend is running"}
@@ -63,7 +65,8 @@ async def root():
 async def health():
     return {"status": "ok"}
 
-# ── AUTH: Login ───────────────────────────────────────────────────────────────
+
+# ── AUTH ──────────────────────────────────────────────────────────────────────
 @app.post("/auth/login")
 async def login(
     email: str = Form(...),
@@ -85,7 +88,7 @@ async def login(
         "user": user,
     }
 
-# ── AUTH: Signup (Disabled - test account only) ────────────────────────────
+
 @app.post("/auth/signup")
 async def signup(
     email: str = Form(...),
@@ -118,12 +121,130 @@ async def signup(
         },
     }
 
-# ── AUTH: Verify Token ────────────────────────────────────────────────────────
+
 @app.get("/auth/verify")
 async def verify_token_endpoint(current_user: dict = Depends(get_current_user)):
     return {"status": "ok", "user": current_user}
 
-# ── RAG: Precedent Search ─────────────────────────────────────────────────────
+
+# ── SESSIONS ──────────────────────────────────────────────────────────────────
+
+@app.get("/sessions")
+async def get_sessions(
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return all sessions for the logged-in user, ordered oldest→newest."""
+    rows = (
+        db.query(UserSession)
+        .filter(UserSession.user_id == current_user["id"])
+        .order_by(UserSession.created_at.asc())
+        .all()
+    )
+    return {
+        "status": "ok",
+        "sessions": [
+            {
+                "id":         r.id,
+                "feature":    r.feature,
+                "label":      r.label,
+                "data":       json.loads(r.data),
+                "created_at": r.created_at.isoformat(),
+                "updated_at": r.updated_at.isoformat() if r.updated_at else r.created_at.isoformat(),
+            }
+            for r in rows
+        ],
+    }
+
+
+@app.post("/sessions")
+async def create_session(
+    feature: str = Form(...),
+    label: str = Form(...),
+    data: str = Form(...),          # JSON string
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Create a new session. Returns the new session id."""
+    # Validate JSON
+    try:
+        json.loads(data)
+    except Exception:
+        raise HTTPException(status_code=400, detail="data must be valid JSON")
+
+    if feature not in ("drafter", "rag", "summarizer"):
+        raise HTTPException(status_code=400, detail="Invalid feature")
+
+    s = UserSession(
+        user_id=current_user["id"],
+        feature=feature,
+        label=label[:120],
+        data=data,
+    )
+    db.add(s)
+    db.commit()
+    db.refresh(s)
+
+    return {
+        "status": "ok",
+        "id":         s.id,
+        "created_at": s.created_at.isoformat(),
+    }
+
+
+@app.patch("/sessions/{session_id}")
+async def update_session(
+    session_id: str,
+    label: str = Form(None),
+    data: str = Form(None),         # JSON string
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Update an existing session's label and/or data."""
+    s = db.query(UserSession).filter(
+        UserSession.id == session_id,
+        UserSession.user_id == current_user["id"],
+    ).first()
+
+    if not s:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if label is not None:
+        s.label = label[:120]
+    if data is not None:
+        try:
+            json.loads(data)
+        except Exception:
+            raise HTTPException(status_code=400, detail="data must be valid JSON")
+        s.data = data
+
+    s.updated_at = datetime.now(timezone.utc)
+    db.commit()
+
+    return {"status": "ok"}
+
+
+@app.delete("/sessions/{session_id}")
+async def delete_session(
+    session_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Delete a session."""
+    s = db.query(UserSession).filter(
+        UserSession.id == session_id,
+        UserSession.user_id == current_user["id"],
+    ).first()
+
+    if not s:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    db.delete(s)
+    db.commit()
+    return {"status": "ok"}
+
+
+# ── RAG ───────────────────────────────────────────────────────────────────────
 from src.rag.guardrails import (
     run_input_guardrails,
     run_output_guardrails,
@@ -137,7 +258,6 @@ async def rag_query(
 ):
     user_id = current_user["id"]
 
-    # ── Input guardrails ──────────────────────────────────────────────────────
     input_results = run_input_guardrails(query, user_id=user_id)
     input_summary = summarise_guardrail_results(input_results)
 
@@ -148,13 +268,10 @@ async def rag_query(
             "guardrail_summary": input_summary,
         }
 
-    # Truncate if warned
     if len(query) > 1000:
         query = query[:1000]
 
-    # ── Run RAG ───────────────────────────────────────────────────────────────
     try:
-        # Detect agent type from query for output guardrails
         agent_type = "case_search" if any(
             w in query.lower() for w in
             ["find", "search", "show me", "cases about", "cases by", "cases from"]
@@ -162,7 +279,6 @@ async def rag_query(
 
         result = run_agentic_system(query)
 
-        # ── Output guardrails ─────────────────────────────────────────────────
         output_results = run_output_guardrails(result, agent_type=agent_type)
         output_summary = summarise_guardrail_results(output_results)
 
@@ -178,9 +294,10 @@ async def rag_query(
         }
 
     except Exception as e:
-        return {"status": "error", "result": str(e)}    
+        return {"status": "error", "result": str(e)}
 
-# ── Drafter: Generate Petition Text ──────────────────────────────────────────
+
+# ── DRAFTER ───────────────────────────────────────────────────────────────────
 @app.post("/draft")
 async def draft_petition(
     story: str = Form(...),
@@ -216,13 +333,12 @@ async def draft_petition(
     except Exception as e:
         return {"status": "error", "result": str(e)}
 
-# ── Drafter: Generate Professional PDF ───────────────────────────────────────
+
 @app.post("/draft/pdf")
 async def draft_pdf(
     petition_text: str = Form(...),
     current_user: dict = Depends(get_current_user)
 ):
-    """Generate court-ready PDF from petition text"""
     try:
         pdf_bytes = generate_petition_pdf(petition_text)
         return StreamingResponse(
@@ -236,7 +352,8 @@ async def draft_pdf(
     except Exception as e:
         return {"status": "error", "result": str(e)}
 
-# ── Summarizer: Case File Briefing ───────────────────────────────────────────
+
+# ── SUMMARIZER ────────────────────────────────────────────────────────────────
 @app.post("/summarize")
 async def summarize(
     file: UploadFile = File(...),
