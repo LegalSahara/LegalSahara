@@ -3,20 +3,23 @@ import shutil
 from datetime import timedelta
 from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 import io
 
 from src.rag.graph import run_agentic_system
 from src.drafter.graph import run_legal_assistant
 from src.summarizer.graph import process_uploaded_document
 from src.drafter.pdf_generator import generate_petition_pdf
+from src.shared.database import get_db, init_db
 from src.shared.auth import (
     authenticate_user,
     create_access_token,
     get_user_from_token,
+    create_user,
+    get_user_by_email,
     ACCESS_TOKEN_EXPIRE_MINUTES,
 )
+from sqlalchemy.orm import Session
 
 app = FastAPI(title="Legal Sahara AI")
 
@@ -27,23 +30,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Authentication Dependency ────────────────────────────────────────────────
-async def get_current_user(authorization: str = Header(None)):
-    """Extract and validate JWT token from Authorization header"""
+
+@app.on_event("startup")
+async def startup_event():
+    init_db()
+
+
+async def get_current_user(
+    authorization: str = Header(None),
+    db: Session = Depends(get_db),
+):
     if not authorization:
         raise HTTPException(status_code=401, detail="Missing authorization header")
-    
     try:
         scheme, token = authorization.split()
         if scheme.lower() != "bearer":
             raise HTTPException(status_code=401, detail="Invalid authentication scheme")
     except ValueError:
         raise HTTPException(status_code=401, detail="Invalid authorization header format")
-    
-    user = get_user_from_token(token)
+
+    user = get_user_from_token(token, db)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
-    
     return user
 
 # ── Health Check ─   ────────────────────────────────────────────────────────────
@@ -57,64 +65,63 @@ async def health():
 
 # ── AUTH: Login ───────────────────────────────────────────────────────────────
 @app.post("/auth/login")
-async def login(email: str = Form(...), password: str = Form(...)):
-    """
-    Login endpoint - returns JWT token if credentials are valid.
-    
-    Test Account:
-    - Email: advocate@legal-sahara.com
-    - Password: demo123
-    """
-    user = authenticate_user(email, password)
-    
+async def login(
+    email: str = Form(...),
+    password: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    user = authenticate_user(db, email, password)
     if not user:
-        return {
-            "status": "error",
-            "message": "Invalid email or password"
-        }
-    
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        return {"status": "error", "message": "Invalid email or password"}
+
     access_token = create_access_token(
         data={"sub": user["email"]},
-        expires_delta=access_token_expires
+        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
     )
-    
+    return {
+        "status": "ok",
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": user,
+    }
+
+# ── AUTH: Signup (Disabled - test account only) ────────────────────────────
+@app.post("/auth/signup")
+async def signup(
+    email: str = Form(...),
+    password: str = Form(...),
+    full_name: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    if len(password) < 6:
+        return {"status": "error", "message": "Password must be at least 6 characters."}
+
+    existing = get_user_by_email(db, email)
+    if existing:
+        return {"status": "error", "message": "An account with this email already exists."}
+
+    user = create_user(db, email=email, password=password, full_name=full_name)
+
+    access_token = create_access_token(
+        data={"sub": user.email},
+        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
+    )
     return {
         "status": "ok",
         "access_token": access_token,
         "token_type": "bearer",
         "user": {
-            "id": user["id"],
-            "email": user["email"],
-            "full_name": user["full_name"],
-            "license_type": user["license_type"],
-        }
-    }
-
-# ── AUTH: Signup (Disabled - test account only) ────────────────────────────
-@app.post("/auth/signup")
-async def signup(email: str = Form(...), password: str = Form(...), full_name: str = Form(...)):
-    """
-    Signup endpoint - currently disabled.
-    Only test account is available.
-    """
-    return {
-        "status": "error",
-        "message": "Signup is currently disabled. Use the test account to login.",
-        "test_account": {
-            "email": "advocate@legal-sahara.com",
-            "password": "demo123"
-        }
+            "id":           user.id,
+            "email":        user.email,
+            "full_name":    user.full_name,
+            "license_type": user.license_type,
+        },
     }
 
 # ── AUTH: Verify Token ────────────────────────────────────────────────────────
 @app.get("/auth/verify")
-async def verify_token(current_user: dict = Depends(get_current_user)):
-    """Verify if token is valid and return user info"""
-    return {
-        "status": "ok",
-        "user": current_user
-    }
+async def verify_token_endpoint(current_user: dict = Depends(get_current_user)):
+    return {"status": "ok", "user": current_user}
 
 # ── RAG: Precedent Search ─────────────────────────────────────────────────────
 from src.rag.guardrails import (
