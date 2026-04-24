@@ -17,7 +17,6 @@ export default function RAGPanel({ session, onSave }) {
   const [result,  setResult]        = useState(session?.result || '');
   const [loading, setLoading]       = useState(false);
   const [blockReason, setBlock]     = useState('');
-  const [warnings, setWarnings]     = useState([]);
 
   // Only runs when user clicks a different history item (session.id changes)
   const prevSessionId = React.useRef(session?.id || null);
@@ -30,12 +29,11 @@ export default function RAGPanel({ session, onSave }) {
     setResult(session.result || '');
     setEvalScores(session.eval_scores || null);
     setBlock('');
-    setWarnings([]);
   }, [session]);
 
   const search = async () => {
     if (!query.trim() || loading) return;
-    setLoading(true); setBlock(''); setWarnings([]);
+    setLoading(true); setBlock(''); 
     setResult(''); setEvalScores(null);
     const q = query.trim();
 
@@ -50,8 +48,6 @@ export default function RAGPanel({ session, onSave }) {
         if (data.eval_scores && Object.keys(data.eval_scores).length > 0) {
           setEvalScores(data.eval_scores);
         }
-        const w = data.guardrail_warnings || [];
-        setWarnings(w);
         const sessionData = { query: q, result: data.result, eval_scores: data.eval_scores || null };
         try {
           const created = await api.createSession('rag', q.slice(0, 80), sessionData);
@@ -112,13 +108,6 @@ export default function RAGPanel({ session, onSave }) {
             </button>
           ))}
         </div>
-
-        {blockReason && (
-          <GuardrailBanner severity="block" message={blockReason} onDismiss={() => setBlock('')} />
-        )}
-        {warnings.length > 0 && (
-          <GuardrailBanner severity="warn" warnings={warnings} onDismiss={() => setWarnings([])} />
-        )}
 
         {result && (
           <div className="result-card">
