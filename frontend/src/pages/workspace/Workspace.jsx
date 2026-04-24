@@ -50,7 +50,7 @@ export default function Workspace({
 
         {activeFeature === 'rag' && (
           <RAGPanel
-            key={activeRagSession?.id || 'rag'}
+            key="rag-panel" // 
             session={activeRagSession}
             onSave={(s) => {
               setRagHistory((h) => [...h, s]);

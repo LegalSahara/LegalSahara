@@ -12,20 +12,25 @@ const EXAMPLES = [
 ];
 
 export default function RAGPanel({ session, onSave }) {
-  const [evalScores, setEvalScores] = useState(null);
+  const [evalScores, setEvalScores] = useState(session?.eval_scores || null);
   const [query,   setQuery]         = useState(session?.query || '');
   const [result,  setResult]        = useState(session?.result || '');
   const [loading, setLoading]       = useState(false);
   const [blockReason, setBlock]     = useState('');
   const [warnings, setWarnings]     = useState([]);
 
+  // Only runs when user clicks a different history item (session.id changes)
+  const prevSessionId = React.useRef(session?.id || null);
+
   useEffect(() => {
-    if (session) {
-      setQuery(session.query);
-      setResult(session.result);
-      setBlock('');
-      setWarnings([]);
-    }
+    if (!session) return;
+    if (session.id === prevSessionId.current) return;
+    prevSessionId.current = session.id;
+    setQuery(session.query || '');
+    setResult(session.result || '');
+    setEvalScores(session.eval_scores || null);
+    setBlock('');
+    setWarnings([]);
   }, [session]);
 
   const search = async () => {
@@ -47,7 +52,7 @@ export default function RAGPanel({ session, onSave }) {
         }
         const w = data.guardrail_warnings || [];
         setWarnings(w);
-        const sessionData = { query: q, result: data.result };
+        const sessionData = { query: q, result: data.result, eval_scores: data.eval_scores || null };
         try {
           const created = await api.createSession('rag', q.slice(0, 80), sessionData);
           console.log('RAG session create response:', created);
@@ -127,6 +132,7 @@ export default function RAGPanel({ session, onSave }) {
             </div>
             <pre className="result-card__content">{result}</pre>
 
+            {/* TODO: eval scores temporarily disabled — fix session state persistence
             {evalScores && Object.keys(evalScores).length > 0 && (
               <div className="eval-grid">
                 {[
@@ -143,6 +149,7 @@ export default function RAGPanel({ session, onSave }) {
                 ))}
               </div>
             )}
+            */}
           </div>
         )}
       </div>
