@@ -1,3 +1,5 @@
+from unittest import result
+
 from src.rag.retrieval import _dense_search, _bm25_search_filtered, _aggregate_rrf, _filter_relative, _expand_case
 from src.rag.qa import _parse_legal_query, _detect_case_reference, _rewrite_query, _generate_answer, _verify_with_gemini
 from src.rag.qa import _call_groq_json, gemini_model, groq_client
@@ -5,6 +7,8 @@ import json
 import re
 from typing import TypedDict, Literal, Optional
 from langgraph.graph import StateGraph, END
+from src.rag.qa import _evaluate_answer
+
 
 # ============================================
 # PLANNER PROMPTS
@@ -237,6 +241,8 @@ class AgenticState(TypedDict):
     plan_number: int
     failure_reason: str
     final_result: str
+    eval_scores: dict
+
 
 # ============================================
 # PLANNER
@@ -498,7 +504,30 @@ def qa_agent_node(state: AgenticState) -> AgenticState:
     results, failure_reason = _execute_plan(plan, query)
 
     if not failure_reason:
-        state["final_result"] = results.get("generate_answer", "Context insufficient.")
+        answer = results.get("generate_answer", "Context insufficient.")
+        state["final_result"] = answer
+
+        ranked = results.get("aggregate_rrf", [])
+        if ranked:
+            top_case = ranked[0]
+            rrf_score = top_case.get("score", 0.0)
+            sources_matched = top_case.get("matched_on", [])
+        else:
+            # Case was found via detect_case_reference — no RRF score available
+            rrf_score = 1.0   # direct case reference = 100% retrieval confidence
+            sources_matched = ["DIRECT"]
+
+        chunks = results.get("expand_case", [])
+        print(f"DEBUG chunks: {len(chunks) if chunks else 'EMPTY'}, answer: {bool(answer)}")
+
+        if chunks and answer and "Context insufficient" not in answer:
+            print("DEBUG calling _evaluate_answer")
+            state["eval_scores"] = _evaluate_answer(
+                query, answer, chunks, rrf_score, sources_matched
+            )
+        else:
+            state["eval_scores"] = {}
+
         return state
 
     # Plan 2
@@ -508,7 +537,18 @@ def qa_agent_node(state: AgenticState) -> AgenticState:
     results_2, failure_reason_2 = _execute_plan(plan_2, query)
 
     if not failure_reason_2:
-        state["final_result"] = results_2.get("generate_answer", "Context insufficient.")
+        answer = results_2.get("generate_answer", "Context insufficient.")
+        state["final_result"] = answer
+
+        ranked = results_2.get("aggregate_rrf", [])
+        top_case = ranked[0] if ranked else {}
+        rrf_score = top_case.get("score", 0.0)
+        sources_matched = top_case.get("matched_on", [])
+        chunks = results_2.get("expand_case", [])
+
+        state["eval_scores"] = _evaluate_answer(
+            query, answer, chunks, rrf_score, sources_matched
+        )
         return state
 
     state["final_result"] = "Context insufficient. Answer could not be verified after replanning."
@@ -568,13 +608,17 @@ def run_agentic_system(query: str, verbose: bool = True):
         "plan_results": {},
         "plan_number": 1,
         "failure_reason": "",
-        "final_result": ""
+        "final_result": "",
+        "eval_scores":    {}
     })
+
+    print(f"DEBUG result keys: {result.keys()}")
+    print(f"DEBUG eval_scores in result: {result.get('eval_scores')}")
 
     if verbose:
         print("\n" + "=" * 60)
         print(f"FINAL RESULT:\n{result['final_result']}")
 
-    return result["final_result"]
+    return result
 
 print("✅ Agentic system ready")

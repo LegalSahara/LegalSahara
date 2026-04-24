@@ -279,12 +279,15 @@ async def rag_query(
 
         result = run_agentic_system(query)
 
-        output_results = run_output_guardrails(result, agent_type=agent_type)
+        result_text = result["final_result"]
+
+        output_results = run_output_guardrails(result_text, agent_type=agent_type)
         output_summary = summarise_guardrail_results(output_results)
 
         return {
             "status":  "ok",
-            "result":  result,
+            "result":  result_text,
+            "eval_scores": result.get("eval_scores", {}),
             "guardrail_warnings": output_summary.get("warnings", []),
             "guardrail_summary":  {
                 "input":  input_summary,

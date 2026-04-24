@@ -18,6 +18,7 @@ services:
       - EMBEDDING_MODEL_NAME=BAAI/bge-large-en-v1.5
       - DATABASE_URL=${DATABASE_URL}
     volumes:
+      - ./backend/src:/app/src
       - ./backend/chromadb_v2:/app/chromadb_v2
       - ./backend/generated_petitions:/app/generated_petitions
       - huggingface_cache:/root/.cache/huggingface 

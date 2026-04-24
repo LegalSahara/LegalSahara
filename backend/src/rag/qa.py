@@ -348,3 +348,60 @@ Respond with ONLY this JSON (no explanation):
         return False
 
 print("✅ Retrieval & QA functions ready")
+
+def _evaluate_answer(query: str, answer: str, chunks: List[Dict], rrf_score: float, sources_matched: list) -> dict:
+    """
+    Evaluate a verified QA answer on faithfulness, relevance, completeness.
+    Single Groq call. Only called after verification passes.
+    """
+    context = _format_context_for_llm(chunks)
+    max_context_chars = 6000
+    if len(context) > max_context_chars:
+        context = context[:max_context_chars]
+
+    try:
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {
+                    "role": "system",
+                    "content": """You are evaluating a legal QA answer. Score each dimension 0-10.
+
+faithfulness: Is every claim in the answer directly supported by the context chunks? Penalise any claim not traceable to the chunks.
+relevance: Does the answer directly address what the question is asking? Penalise off-topic content.
+completeness: Does the answer cover all aspects of the question given the available context?
+
+Return ONLY valid JSON with exactly these keys:
+{"faithfulness": 0, "relevance": 0, "completeness": 0}"""
+                },
+                {
+                    "role": "user",
+                    "content": f"QUESTION:\n{query}\n\nANSWER:\n{answer}\n\nCONTEXT:\n{context}"
+                }
+            ],
+            response_format={"type": "json_object"},
+            temperature=0
+        )
+        scores = json.loads(response.choices[0].message.content)
+    except Exception as e:
+        print(f"  ⚠️ Evaluation call failed: {e}")
+        scores = {"faithfulness": 0, "relevance": 0, "completeness": 0}
+
+    # Retrieval score — convert RRF score to percentage
+    # RRF scores typically range 0.01–0.06, cap at 0.06 for 100%
+    retrieval_pct = min(round((rrf_score / 0.06) * 100), 100)
+
+    try:
+        retrieval_pct = min(round((rrf_score / 0.06) * 100), 100)
+        print('rreturing scoresssss')
+        return {
+            "retrieval_score":  retrieval_pct,
+            "sources_matched":  "BOTH" if len(sources_matched) == 2 else (sources_matched[0] if sources_matched else "UNKNOWN"),
+            "faithfulness":     int(scores.get("faithfulness", 0)),
+            "relevance":        int(scores.get("relevance", 0)),
+            "completeness":     int(scores.get("completeness", 0)),
+        }
+    except Exception as e:
+        print(f"DEBUG return block crashed: {e}")
+        import traceback; traceback.print_exc()
+        return {}

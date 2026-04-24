@@ -379,83 +379,65 @@ export default function App() {
           </div>
 
           {/* Feature tabs */}
-          <div style={{ padding:'12px 8px', borderBottom:'1px solid #E8E4DC' }}>
+          <div style={{ padding:'8px 0', borderBottom:'1px solid #E8E4DC' }}>
             {features.map(({ id, icon: Icon, label }) => (
               <button key={id} onClick={() => setFeat(id)}
-                style={{ display:'flex', alignItems:'center', gap:10, width:'100%', padding:'10px 12px', background:activeFeature===id?'#0B1929':'transparent', border:'none', cursor:'pointer', textAlign:'left', marginBottom:2 }}>
-                <Icon style={{ width:14, height:14, color:activeFeature===id?'#D4AF37':'#9CA8BC', flexShrink:0 }} />
-                <span style={{ fontFamily:'DM Mono,monospace', fontSize:10, letterSpacing:'0.05em', color:activeFeature===id?'white':'#6B6B6B' }}>{label}</span>
+                style={{ display:'flex', alignItems:'center', gap:10, width:'100%', padding:'9px 20px', background:'none', border:'none', cursor:'pointer', textAlign:'left' }}>
+                <Icon style={{ width:13, height:13, color:activeFeature===id?'#0B1929':'#C8C4BC', flexShrink:0 }} />
+                <span style={{ fontFamily:'DM Mono,monospace', fontSize:10, letterSpacing:'0.05em', color:activeFeature===id?'#0B1929':'#9CA8BC', fontWeight:activeFeature===id?600:400, borderBottom:activeFeature===id?'1px solid #0B1929':'none', paddingBottom:activeFeature===id?1:0 }}>{label}</span>
               </button>
             ))}
           </div>
 
           {/* History */}
-          <div style={{ flex:1, padding:'12px 8px', overflowY:'auto' }}>
-            <p style={{ fontFamily:'DM Mono,monospace', fontSize:8, letterSpacing:'0.15em', textTransform:'uppercase', color:'#B8B0A0', padding:'4px 12px', marginBottom:8 }}>History</p>
+          <div style={{ flex:1, padding:'16px 0', overflowY:'auto' }}>
+            <p style={{ fontFamily:'DM Mono,monospace', fontSize:8, letterSpacing:'0.15em', textTransform:'uppercase', color:'#C8C4BC', padding:'0 20px', marginBottom:10 }}>History</p>
             {activeFeature === 'drafter' && (
-              <>
-                {drafterHistory.length === 0
-                  ? <p style={{ fontFamily:'Georgia,serif', fontSize:13, color:'#B8B0A0', padding:'4px 12px', fontStyle:'italic' }}>No sessions yet</p>
-                  : drafterHistory.slice().reverse().map(s => (
-                    <button key={s.id} onClick={() => setActiveDraftSession(s)}
-                      style={{ display:'flex', alignItems:'flex-start', gap:8, width:'100%', padding:'10px 12px', background:activeDraftSession?.id===s.id?'#F7F4EF':'transparent', border:'none', cursor:'pointer', textAlign:'left', marginBottom:2 }}>
-                      <Clock style={{ width:11, height:11, color:'#B8B0A0', flexShrink:0, marginTop:2 }} />
-                      <div>
-                        <p style={{ fontFamily:'Georgia,serif', fontSize:13, color:'#0B1929', marginBottom:2 }}>{s.label}</p>
-                        <p style={{ fontFamily:'DM Mono,monospace', fontSize:8, color:'#B8B0A0', letterSpacing:'0.06em' }}>{formatTime(s.ts)}</p>
-                      </div>
-                    </button>
-                  ))
-                }
-              </>
+              drafterHistory.length === 0
+                ? <p style={{ fontFamily:'Georgia,serif', fontSize:13, color:'#C8C4BC', padding:'0 20px', fontStyle:'italic' }}>No sessions yet</p>
+                : drafterHistory.slice().reverse().map(s => (
+                  <button key={s.id} onClick={() => setActiveDraftSession(s)}
+                    style={{ display:'block', width:'100%', padding:'8px 20px', background:activeDraftSession?.id===s.id?'#F7F4EF':'none', border:'none', cursor:'pointer', textAlign:'left' }}>
+                    <p style={{ fontFamily:'Georgia,serif', fontSize:13, color:activeDraftSession?.id===s.id?'#0B1929':'#4A4035', marginBottom:2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{s.label}</p>
+                    <p style={{ fontFamily:'DM Mono,monospace', fontSize:8, color:'#C8C4BC', letterSpacing:'0.06em' }}>{formatTime(s.ts)}</p>
+                  </button>
+                ))
             )}
             {activeFeature === 'rag' && (
-              <>
-                {ragHistory.length === 0
-                  ? <p style={{ fontFamily:'Georgia,serif', fontSize:13, color:'#B8B0A0', padding:'4px 12px', fontStyle:'italic' }}>No searches yet</p>
-                  : ragHistory.slice().reverse().map(s => (
-                    <button key={s.id} onClick={() => setActiveRagSession(s)}
-                      style={{ display:'flex', alignItems:'flex-start', gap:8, width:'100%', padding:'10px 12px', background:activeRagSession?.id===s.id?'#F7F4EF':'transparent', border:'none', cursor:'pointer', textAlign:'left', marginBottom:2 }}>
-                      <Clock style={{ width:11, height:11, color:'#B8B0A0', flexShrink:0, marginTop:2 }} />
-                      <div>
-                        <p style={{ fontFamily:'Georgia,serif', fontSize:13, color:'#0B1929', marginBottom:2 }}>{s.query.slice(0,50)}{s.query.length>50?'…':''}</p>
-                        <p style={{ fontFamily:'DM Mono,monospace', fontSize:8, color:'#B8B0A0', letterSpacing:'0.06em' }}>{formatTime(s.ts)}</p>
-                      </div>
-                    </button>
-                  ))
-                }
-              </>
+              ragHistory.length === 0
+                ? <p style={{ fontFamily:'Georgia,serif', fontSize:13, color:'#C8C4BC', padding:'0 20px', fontStyle:'italic' }}>No searches yet</p>
+                : ragHistory.slice().reverse().map(s => (
+                  <button key={s.id} onClick={() => setActiveRagSession(s)}
+                    style={{ display:'block', width:'100%', padding:'8px 20px', background:activeRagSession?.id===s.id?'#F7F4EF':'none', border:'none', cursor:'pointer', textAlign:'left' }}>
+                    <p style={{ fontFamily:'Georgia,serif', fontSize:13, color:activeRagSession?.id===s.id?'#0B1929':'#4A4035', marginBottom:2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{s.query?.slice(0,50)}{s.query?.length>50?'…':''}</p>
+                    <p style={{ fontFamily:'DM Mono,monospace', fontSize:8, color:'#C8C4BC', letterSpacing:'0.06em' }}>{formatTime(s.ts)}</p>
+                  </button>
+                ))
             )}
             {activeFeature === 'summarizer' && (
-              <>
-                {summaryHistory.length === 0
-                  ? <p style={{ fontFamily:'Georgia,serif', fontSize:13, color:'#B8B0A0', padding:'4px 12px', fontStyle:'italic' }}>No documents yet</p>
-                  : summaryHistory.slice().reverse().map(s => (
-                    <button key={s.id} onClick={() => setActiveSummarySession(s)}
-                      style={{ display:'flex', alignItems:'flex-start', gap:8, width:'100%', padding:'10px 12px', background:activeSummarySession?.id===s.id?'#F7F4EF':'transparent', border:'none', cursor:'pointer', textAlign:'left', marginBottom:2 }}>
-                      <Clock style={{ width:11, height:11, color:'#B8B0A0', flexShrink:0, marginTop:2 }} />
-                      <div>
-                        <p style={{ fontFamily:'Georgia,serif', fontSize:13, color:'#0B1929', marginBottom:2 }}>{s.filename}</p>
-                        <p style={{ fontFamily:'DM Mono,monospace', fontSize:8, color:'#B8B0A0', letterSpacing:'0.06em' }}>{formatTime(s.ts)}</p>
-                      </div>
-                    </button>
-                  ))
-                }
-              </>
+              summaryHistory.length === 0
+                ? <p style={{ fontFamily:'Georgia,serif', fontSize:13, color:'#C8C4BC', padding:'0 20px', fontStyle:'italic' }}>No documents yet</p>
+                : summaryHistory.slice().reverse().map(s => (
+                  <button key={s.id} onClick={() => setActiveSummarySession(s)}
+                    style={{ display:'block', width:'100%', padding:'8px 20px', background:activeSummarySession?.id===s.id?'#F7F4EF':'none', border:'none', cursor:'pointer', textAlign:'left' }}>
+                    <p style={{ fontFamily:'Georgia,serif', fontSize:13, color:activeSummarySession?.id===s.id?'#0B1929':'#4A4035', marginBottom:2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{s.filename||s.label}</p>
+                    <p style={{ fontFamily:'DM Mono,monospace', fontSize:8, color:'#C8C4BC', letterSpacing:'0.06em' }}>{formatTime(s.ts)}</p>
+                  </button>
+                ))
             )}
           </div>
 
           {/* New session button */}
-          <div style={{ padding:12, borderTop:'1px solid #E8E4DC' }}>
+          <div style={{ padding:'12px 20px', borderTop:'1px solid #E8E4DC' }}>
             <button
               onClick={() => {
                 if (activeFeature==='drafter') setActiveDraftSession(null);
                 if (activeFeature==='rag') setActiveRagSession(null);
                 if (activeFeature==='summarizer') setActiveSummarySession(null);
               }}
-              style={{ display:'flex', alignItems:'center', gap:8, width:'100%', padding:'10px 12px', background:'#F7F4EF', border:'1px solid #E8E4DC', cursor:'pointer' }}>
-              <Plus style={{ width:13, height:13, color:'#B8960C' }} />
-              <span style={{ fontFamily:'DM Mono,monospace', fontSize:10, letterSpacing:'0.1em', textTransform:'uppercase', color:'#4A4035' }}>New Session</span>
+              style={{ display:'flex', alignItems:'center', gap:8, background:'none', border:'none', cursor:'pointer', padding:0 }}>
+              <Plus style={{ width:12, height:12, color:'#B8960C' }} />
+              <span style={{ fontFamily:'DM Mono,monospace', fontSize:9, letterSpacing:'0.1em', textTransform:'uppercase', color:'#B8960C' }}>New Session</span>
             </button>
           </div>
         </aside>
@@ -656,8 +638,8 @@ export default function App() {
         </div>
 
         {/* Document */}
-        <div style={{ flex:1, display:'flex', flexDirection:'column', background:'#EDEAE3', overflow:'hidden' }}>
-          <div style={{ padding:'10px 20px', background:'white', borderBottom:'1px solid #E8E4DC', display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:8 }}>
+        <div style={{ flex:1, display:'flex', flexDirection:'column', background:'#F7F4EF', overflow:'hidden' }}>
+          <div style={{ padding:'10px 28px', background:'#F7F4EF', borderBottom:'1px solid #E8E4DC', display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:8 }}>
             <div style={{ display:'flex', alignItems:'center', gap:8 }}>
               <FileText style={{ width:13, height:13, color:'#B8960C' }} />
               <span style={{ fontFamily:'DM Mono,monospace', fontSize:9, letterSpacing:'0.12em', textTransform:'uppercase', color:'#6B6B6B' }}>Petition Draft</span>
@@ -665,40 +647,37 @@ export default function App() {
             </div>
             <div style={{ display:'flex', gap:6 }}>
               <button onClick={()=>{navigator.clipboard.writeText(doc);setCopied(true);setTimeout(()=>setCopied(false),2000);}} disabled={!doc}
-                style={{ display:'flex', alignItems:'center', gap:4, fontFamily:'DM Mono,monospace', fontSize:9, letterSpacing:'0.1em', textTransform:'uppercase', color:'#6B6B6B', border:'1px solid #E8E4DC', padding:'6px 12px', background:'white', opacity:doc?1:0.4, cursor:doc?'pointer':'not-allowed' }}>
+                style={{ display:'flex', alignItems:'center', gap:4, fontFamily:'DM Mono,monospace', fontSize:9, letterSpacing:'0.1em', textTransform:'uppercase', color:'#6B6B6B', border:'none', background:'none', opacity:doc?1:0.4, cursor:doc?'pointer':'not-allowed', padding:'6px 8px' }}>
                 {copied?<Check style={{width:10,height:10,color:'#16A34A'}}/>:<Copy style={{width:10,height:10}}/>} {copied?'Copied':'Copy'}
               </button>
               <button onClick={()=>doc&&downloadTxt(doc,'petition_draft.txt')} disabled={!doc}
-                style={{ display:'flex', alignItems:'center', gap:4, fontFamily:'DM Mono,monospace', fontSize:9, letterSpacing:'0.1em', textTransform:'uppercase', color:'#6B6B6B', border:'1px solid #E8E4DC', padding:'6px 12px', background:'white', opacity:doc?1:0.4, cursor:doc?'pointer':'not-allowed' }}>
+                style={{ display:'flex', alignItems:'center', gap:4, fontFamily:'DM Mono,monospace', fontSize:9, letterSpacing:'0.1em', textTransform:'uppercase', color:'#6B6B6B', border:'none', background:'none', opacity:doc?1:0.4, cursor:doc?'pointer':'not-allowed', padding:'6px 8px' }}>
                 <File style={{width:10,height:10}}/>.TXT
               </button>
               <button onClick={handlePdf} disabled={!doc||pdfLoading}
-                style={{ display:'flex', alignItems:'center', gap:4, fontFamily:'DM Mono,monospace', fontSize:9, letterSpacing:'0.1em', textTransform:'uppercase', padding:'6px 16px', background:doc&&!pdfLoading?'#0B1929':'#E8E4DC', color:doc&&!pdfLoading?'white':'#9CA8BC', border:'none', cursor:doc&&!pdfLoading?'pointer':'not-allowed' }}>
+                style={{ display:'flex', alignItems:'center', gap:4, fontFamily:'DM Mono,monospace', fontSize:9, letterSpacing:'0.1em', textTransform:'uppercase', padding:'6px 16px', background:doc&&!pdfLoading?'#0B1929':'transparent', color:doc&&!pdfLoading?'white':'#B8B0A0', border:`1px solid ${doc&&!pdfLoading?'#0B1929':'#E8E4DC'}`, cursor:doc&&!pdfLoading?'pointer':'not-allowed' }}>
                 {pdfLoading?<><Loader2 style={{width:10,height:10,animation:'spin 1s linear infinite'}}/>Generating…</>:<><FileDown style={{width:10,height:10}}/>Export PDF</>}
               </button>
             </div>
           </div>
-          {blockReason && <div style={{ margin:'16px 24px 0' }}><GuardrailBanner severity="block" message={blockReason} onDismiss={()=>setBlock('')}/></div>}
-          {warnings.length>0 && doc && <div style={{ margin:'16px 24px 0' }}><GuardrailBanner severity="warn" warnings={warnings} onDismiss={()=>setWarnings([])}/></div>}
-          <div style={{ flex:1, overflowY:'auto', padding:'28px 32px', display:'flex', justifyContent:'center' }}>
-            <div style={{ width:'100%', maxWidth:800, background:'white', minHeight:1123, padding:'72px', boxShadow:'0 4px 24px rgba(0,0,0,0.08)', border:'1px solid #E8E4DC' }}>
-              {!doc ? (
-                <div style={{ height:'100%', minHeight:900, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', color:'#B8B0A0' }}>
-                  <FileText style={{ width:32, height:32, color:'#E8E4DC', marginBottom:20 }} />
-                  <p style={{ fontFamily:'Playfair Display,Georgia,serif', fontSize:20, color:'#6B6B6B', marginBottom:8 }}>Court Petition Will Appear Here</p>
-                  <p style={{ fontFamily:'Georgia,serif', fontSize:15, color:'#B8B0A0', textAlign:'center', maxWidth:320, lineHeight:1.65 }}>Describe your matter in the Agent Console. The petition will appear here for review before PDF export.</p>
-                  <div style={{ marginTop:32, display:'flex', flexWrap:'wrap', gap:8, justifyContent:'center' }}>
-                    {['Habeas Corpus','Post-Arrest Bail','Pre-Arrest Bail','Quashment'].map(t=>(
-                      <span key={t} style={{ fontFamily:'DM Mono,monospace', fontSize:8, letterSpacing:'0.08em', textTransform:'uppercase', color:'#B8B0A0', border:'1px solid #E8E4DC', padding:'5px 10px' }}>{t}</span>
-                    ))}
-                  </div>
+          {blockReason && <div style={{ padding:'0 28px', marginTop:16 }}><GuardrailBanner severity="block" message={blockReason} onDismiss={()=>setBlock('')}/></div>}
+          {warnings.length>0 && doc && <div style={{ padding:'0 28px', marginTop:16 }}><GuardrailBanner severity="warn" warnings={warnings} onDismiss={()=>setWarnings([])}/></div>}
+          <div style={{ flex:1, overflowY:'auto', padding:'40px 56px' }}>
+            {!doc ? (
+              <div style={{ paddingTop:80, display:'flex', flexDirection:'column', alignItems:'flex-start' }}>
+                <p style={{ fontFamily:'Playfair Display,Georgia,serif', fontSize:22, color:'#C8C4BC', marginBottom:12, fontStyle:'italic' }}>Your petition will appear here.</p>
+                <p style={{ fontFamily:'Georgia,serif', fontSize:15, color:'#C8C4BC', lineHeight:1.7, maxWidth:380 }}>Describe your matter in the chat. The draft will be generated and rendered here for review and editing.</p>
+                <div style={{ marginTop:32, display:'flex', flexWrap:'wrap', gap:6 }}>
+                  {['Habeas Corpus','Post-Arrest Bail','Pre-Arrest Bail','Quashment'].map(t=>(
+                    <span key={t} style={{ fontFamily:'DM Mono,monospace', fontSize:8, letterSpacing:'0.08em', textTransform:'uppercase', color:'#C8C4BC', padding:'4px 0', marginRight:12 }}>{t}</span>
+                  ))}
                 </div>
-              ) : (
-                <textarea value={doc} onChange={e=>handleDocChange(e.target.value)}
-                  style={{ width:'100%', resize:'none', outline:'none', color:'#1A1A1A', lineHeight:1.85, background:'transparent', fontFamily:'Times New Roman,Georgia,serif', fontSize:'12pt', minHeight:980, border:'none' }}
-                  spellCheck={false} />
-              )}
-            </div>
+              </div>
+            ) : (
+              <textarea value={doc} onChange={e=>handleDocChange(e.target.value)}
+                style={{ width:'100%', resize:'none', outline:'none', color:'#1A1A1A', lineHeight:1.9, background:'transparent', fontFamily:'Times New Roman,Georgia,serif', fontSize:'12pt', minHeight:980, border:'none' }}
+                spellCheck={false} />
+            )}
           </div>
         </div>
       </div>
@@ -707,6 +686,7 @@ export default function App() {
 
   // ── RAG Panel ─────────────────────────────────────────────────────────────────
   const RAGPanel = ({ session, onSave }) => {
+    const [evalScores, setEvalScores] = useState(null);
     const [query,   setQuery]     = useState(session?.query || '');
     const [result,  setResult]    = useState(session?.result || '');
     const [loading, setLoading]   = useState(false);
@@ -722,13 +702,15 @@ export default function App() {
 
     const search = async () => {
       if (!query.trim() || loading) return;
-      setLoading(true); setBlock(''); setWarnings([]); setResult('');
+      setLoading(true); setBlock(''); setWarnings([]); setResult(''); setEvalScores(null);
       const q = query.trim();
       try {
         const data = await api.rag(q);
         if (data.status === 'blocked') { setBlock(data.result || data.guardrail_summary?.block_reason || 'Blocked.'); return; }
         if (data.status === 'ok') {
           setResult(data.result);
+          if (data.eval_scores && Object.keys(data.eval_scores).length > 0) {
+            setEvalScores(data.eval_scores); }
           const w = data.guardrail_warnings || [];
           setWarnings(w);
           const sessionData = { query: q, result: data.result };
@@ -765,10 +747,10 @@ export default function App() {
             </button>
           </div>
 
-          <div style={{ display:'flex', flexWrap:'wrap', gap:6, marginBottom:32 }}>
+          <div style={{ display:'flex', flexWrap:'wrap', gap:8, marginBottom:32 }}>
             {EXAMPLES.map((ex,i)=>(
-              <button key={i} onClick={()=>setQuery(ex)} style={{ fontFamily:'DM Mono,monospace', fontSize:8, letterSpacing:'0.1em', textTransform:'uppercase', color:'#6B6B6B', border:'1px solid #E8E4DC', padding:'5px 10px', background:'white', cursor:'pointer' }}>
-                {ex}
+              <button key={i} onClick={()=>setQuery(ex)} style={{ fontFamily:'DM Mono,monospace', fontSize:8, letterSpacing:'0.1em', textTransform:'uppercase', color:'#9CA8BC', border:'none', padding:'0', background:'none', cursor:'pointer' }}>
+                {ex}{i < EXAMPLES.length-1 && <span style={{ color:'#D9D4C8', marginLeft:8 }}>·</span>}
               </button>
             ))}
           </div>
@@ -777,27 +759,35 @@ export default function App() {
           {warnings.length>0 && <GuardrailBanner severity="warn" warnings={warnings} onDismiss={()=>setWarnings([])}/>}
 
           {result && (
-            <div style={{ background:'white', border:'1px solid #E8E4DC' }}>
-              <div style={{ padding:'10px 16px', borderBottom:'1px solid #E8E4DC', display:'flex', alignItems:'center', justifyContent:'space-between', background:'#FAFAF8' }}>
-                <div style={{ display:'flex', alignItems:'center', gap:8 }}><FileCheck2 style={{width:13,height:13,color:'#B8960C'}}/><span style={{ fontFamily:'DM Mono,monospace', fontSize:9, letterSpacing:'0.12em', textTransform:'uppercase', color:'#0B1929' }}>Search Results</span></div>
-                <button onClick={()=>navigator.clipboard.writeText(result)} style={{ fontFamily:'DM Mono,monospace', fontSize:8, letterSpacing:'0.1em', textTransform:'uppercase', color:'#9CA8BC', background:'none', border:'none', cursor:'pointer', display:'flex', alignItems:'center', gap:4 }}><Copy style={{width:10,height:10}}/>Copy</button>
-              </div>
-              <div style={{ padding:'24px 20px' }}>
-                <pre style={{ fontFamily:'DM Mono,Courier New,monospace', fontSize:12, color:'#3D3D3D', lineHeight:1.75, whiteSpace:'pre-wrap' }}>{result}</pre>
-              </div>
-            </div>
-          )}
+    <div>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:20, paddingBottom:12, borderBottom:'1px solid #E8E4DC' }}>
+        <span style={{ fontFamily:'DM Mono,monospace', fontSize:9, letterSpacing:'0.12em', textTransform:'uppercase', color:'#B8960C' }}>Results</span>
+        <button onClick={()=>navigator.clipboard.writeText(result)} style={{ fontFamily:'DM Mono,monospace', fontSize:8, letterSpacing:'0.1em', textTransform:'uppercase', color:'#B8B0A0', background:'none', border:'none', cursor:'pointer', display:'flex', alignItems:'center', gap:4 }}><Copy style={{width:10,height:10}}/>Copy</button>
+      </div>
+      <pre style={{ fontFamily:'Georgia,serif', fontSize:15, color:'#2A2A2A', lineHeight:1.85, whiteSpace:'pre-wrap' }}>{result}</pre>
 
-          {!result && !blockReason && !loading && (
-            <div style={{ background:'white', border:'1px solid #E8E4DC', padding:'60px 24px', textAlign:'center' }}>
-              <BookOpen style={{ width:24, height:24, color:'#E8E4DC', margin:'0 auto 12px' }} />
-              <p style={{ fontFamily:'Playfair Display,Georgia,serif', fontSize:18, color:'#6B6B6B', marginBottom:6 }}>Database Ready</p>
-              <p style={{ fontFamily:'DM Mono,monospace', fontSize:9, letterSpacing:'0.1em', textTransform:'uppercase', color:'#B8B0A0' }}>10,482 Judgments — Awaiting Query</p>
+      {/* ── Eval scores ── */}
+      {evalScores && Object.keys(evalScores).length > 0 && (
+        <div style={{ display:'flex', flexWrap:'wrap', gap:12, marginTop:24, paddingTop:20, borderTop:'1px solid #E8E4DC' }}>
+          {[
+            { label:'Retrieval', value:`${evalScores.retrieval_score}%` },
+            { label:'Sources',   value: evalScores.sources_matched },
+            { label:'Faithfulness', value:`${evalScores.faithfulness}/10` },
+            { label:'Relevance',    value:`${evalScores.relevance}/10` },
+            { label:'Completeness', value:`${evalScores.completeness}/10` },
+          ].map(({ label, value }) => (
+            <div key={label} style={{ background:'white', border:'1px solid #E8E4DC', padding:'10px 16px', textAlign:'center', minWidth:90 }}>
+              <p style={{ fontFamily:'DM Mono,monospace', fontSize:8, letterSpacing:'0.12em', textTransform:'uppercase', color:'#9CA8BC', marginBottom:4 }}>{label}</p>
+              <p style={{ fontFamily:'Playfair Display,Georgia,serif', fontSize:18, fontWeight:700, color:'#B8960C' }}>{value}</p>
             </div>
-          )}
+          ))}
+        </div>
+      )}
+    </div>
+)}
         </div>
       </div>
-    );
+    )
   };
 
   // ── Summary Panel ─────────────────────────────────────────────────────────────
@@ -861,47 +851,46 @@ export default function App() {
                 onDragOver={e=>{e.preventDefault();setDragOver(true);}}
                 onDragLeave={()=>setDragOver(false)}
                 onDrop={e=>{e.preventDefault();setDragOver(false);handleFile(e.dataTransfer.files[0]);}}
-                style={{ border:`2px dashed ${dragOver?'#B8960C':'#D9D4C8'}`, padding:'48px 32px', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', cursor:'pointer', background:dragOver?'#FFFBEB':'#FAFAF8', marginBottom:16, transition:'all 0.15s' }}>
+                style={{ paddingBottom:32, borderBottom:`1px solid ${dragOver?'#B8960C':'#E8E4DC'}`, display:'flex', alignItems:'center', gap:20, cursor:'pointer', marginBottom:24, transition:'all 0.15s' }}>
                 <input ref={fileRef} type="file" style={{ display:'none' }} accept=".pdf,.docx,.txt,.png,.jpg,.jpeg" onChange={e=>handleFile(e.target.files[0])} />
-                <UploadCloud style={{ width:26, height:26, color:file?'#B8960C':'#D9D4C8', marginBottom:14 }} />
+                <UploadCloud style={{ width:22, height:22, color:file?'#B8960C':'#C8C4BC', flexShrink:0 }} />
                 {file ? (
-                  <div style={{ textAlign:'center' }}>
-                    <p style={{ fontFamily:'Playfair Display,Georgia,serif', fontSize:17, color:'#0B1929', marginBottom:4 }}>{file.name}</p>
-                    <p style={{ fontFamily:'DM Mono,monospace', fontSize:9, letterSpacing:'0.1em', textTransform:'uppercase', color:'#9CA8BC' }}>{(file.size/1024).toFixed(1)} KB</p>
-                    <button onClick={e=>{e.stopPropagation();setFile(null);}} style={{ fontFamily:'DM Mono,monospace', fontSize:8, color:'#DC2626', marginTop:10, display:'flex', alignItems:'center', gap:4, margin:'10px auto 0', background:'none', border:'none', cursor:'pointer' }}><X style={{width:10,height:10}}/>Remove</button>
+                  <div style={{ flex:1 }}>
+                    <p style={{ fontFamily:'Georgia,serif', fontSize:16, color:'#0B1929', marginBottom:2 }}>{file.name}</p>
+                    <p style={{ fontFamily:'DM Mono,monospace', fontSize:9, letterSpacing:'0.1em', textTransform:'uppercase', color:'#B8B0A0' }}>{(file.size/1024).toFixed(1)} KB — ready</p>
                   </div>
                 ) : (
-                  <div style={{ textAlign:'center' }}>
-                    <p style={{ fontFamily:'Playfair Display,Georgia,serif', fontSize:18, color:'#6B6B6B', marginBottom:6 }}>Drop a legal document here</p>
-                    <p style={{ fontFamily:'DM Mono,monospace', fontSize:9, letterSpacing:'0.1em', textTransform:'uppercase', color:'#B8B0A0' }}>PDF, DOCX, TXT, PNG, JPG — up to 25 MB</p>
+                  <div style={{ flex:1 }}>
+                    <p style={{ fontFamily:'Georgia,serif', fontSize:16, color:'#6B6B6B', marginBottom:2 }}>Drop a legal document, or click to browse</p>
+                    <p style={{ fontFamily:'DM Mono,monospace', fontSize:9, letterSpacing:'0.1em', textTransform:'uppercase', color:'#B8B0A0' }}>PDF · DOCX · TXT · PNG · JPG — up to 25 MB</p>
                   </div>
+                )}
+                {file && (
+                  <button onClick={e=>{e.stopPropagation();setFile(null);}} style={{ fontFamily:'DM Mono,monospace', fontSize:8, color:'#DC2626', background:'none', border:'none', cursor:'pointer', flexShrink:0 }}>Remove</button>
                 )}
               </div>
 
               {blockReason && <GuardrailBanner severity="block" message={blockReason} onDismiss={()=>setBlock('')}/>}
 
               <button onClick={submit} disabled={!file||loading}
-                style={{ width:'100%', padding:'13px 0', fontFamily:'DM Mono,monospace', fontSize:10, letterSpacing:'0.15em', textTransform:'uppercase', background:!file||loading?'#E8E4DC':'#0B1929', color:!file||loading?'#9CA8BC':'white', border:'none', cursor:!file||loading?'not-allowed':'pointer', display:'flex', alignItems:'center', justifyContent:'center', gap:8, marginBottom:32 }}>
+                style={{ padding:'12px 28px', fontFamily:'DM Mono,monospace', fontSize:10, letterSpacing:'0.15em', textTransform:'uppercase', background:!file||loading?'transparent':'#0B1929', color:!file||loading?'#B8B0A0':'white', border:`1px solid ${!file||loading?'#E8E4DC':'#0B1929'}`, cursor:!file||loading?'not-allowed':'pointer', display:'inline-flex', alignItems:'center', gap:8, marginBottom:40 }}>
                 {loading?<><Loader2 style={{width:14,height:14,animation:'spin 1s linear infinite'}}/>Analysing — 60–90 seconds…</>:'Generate Legal Brief'}
               </button>
             </>
           )}
 
           {result && (
-            <div style={{ background:'white', border:'1px solid #E8E4DC' }}>
-              <div style={{ padding:'10px 16px', borderBottom:'1px solid #E8E4DC', display:'flex', alignItems:'center', justifyContent:'space-between', background:'#FAFAF8' }}>
-                <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-                  <FileCheck2 style={{width:13,height:13,color:'#B8960C'}}/>
-                  <span style={{ fontFamily:'DM Mono,monospace', fontSize:9, letterSpacing:'0.12em', textTransform:'uppercase', color:'#0B1929' }}>
+            <div>
+              <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:24, paddingBottom:12, borderBottom:'1px solid #E8E4DC' }}>
+                <div>
+                  <span style={{ fontFamily:'DM Mono,monospace', fontSize:9, letterSpacing:'0.12em', textTransform:'uppercase', color:'#B8960C' }}>
                     {session ? session.filename : 'Legal Memorandum'}
                   </span>
-                  {session && <span style={{ fontFamily:'DM Mono,monospace', fontSize:8, color:'#B8B0A0' }}>{formatTime(session.ts)}</span>}
+                  {session && <span style={{ fontFamily:'DM Mono,monospace', fontSize:8, color:'#B8B0A0', marginLeft:12 }}>{formatTime(session.ts)}</span>}
                 </div>
-                <button onClick={()=>downloadTxt(result, resultFilename)} style={{ display:'flex', alignItems:'center', gap:4, fontFamily:'DM Mono,monospace', fontSize:8, letterSpacing:'0.1em', textTransform:'uppercase', color:'#9CA8BC', background:'none', border:'none', cursor:'pointer' }}><Download style={{width:10,height:10}}/>Download .TXT</button>
+                <button onClick={()=>downloadTxt(result, resultFilename)} style={{ display:'flex', alignItems:'center', gap:4, fontFamily:'DM Mono,monospace', fontSize:8, letterSpacing:'0.1em', textTransform:'uppercase', color:'#B8B0A0', background:'none', border:'none', cursor:'pointer' }}><Download style={{width:10,height:10}}/>Download</button>
               </div>
-              <div style={{ padding:'32px', minHeight:400 }}>
-                <pre style={{ fontFamily:'Times New Roman,Georgia,serif', fontSize:'12pt', color:'#1A1A1A', lineHeight:1.85, whiteSpace:'pre-wrap' }}>{result}</pre>
-              </div>
+              <pre style={{ fontFamily:'Georgia,serif', fontSize:15, color:'#1A1A1A', lineHeight:1.9, whiteSpace:'pre-wrap' }}>{result}</pre>
             </div>
           )}
         </div>
