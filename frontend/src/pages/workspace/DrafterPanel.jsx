@@ -149,7 +149,7 @@ export default function DrafterPanel({ session, onSave, onUpdate }) {
       const a = document.createElement('a');
       a.href = url; a.download = 'legal_petition.pdf'; a.click();
       URL.revokeObjectURL(url);
-      addMsg('agent', '✅ PDF downloaded. Review carefully before filing.');
+      addMsg('agent', 'PDF downloaded. Review carefully before filing.');
     } catch (e) {
       addMsg('agent', `⚠ PDF failed: ${e.message}`);
     } finally {
