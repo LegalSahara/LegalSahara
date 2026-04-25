@@ -12,13 +12,11 @@ const EXAMPLES = [
 ];
 
 export default function RAGPanel({ session, onSave }) {
-  const [evalScores, setEvalScores] = useState(session?.eval_scores || null);
   const [query,   setQuery]         = useState(session?.query || '');
   const [result,  setResult]        = useState(session?.result || '');
   const [loading, setLoading]       = useState(false);
   const [blockReason, setBlock]     = useState('');
 
-  // Only runs when user clicks a different history item (session.id changes)
   const prevSessionId = React.useRef(session?.id || null);
 
   useEffect(() => {
@@ -27,14 +25,13 @@ export default function RAGPanel({ session, onSave }) {
     prevSessionId.current = session.id;
     setQuery(session.query || '');
     setResult(session.result || '');
-    setEvalScores(session.eval_scores || null);
     setBlock('');
   }, [session]);
 
   const search = async () => {
     if (!query.trim() || loading) return;
-    setLoading(true); setBlock(''); 
-    setResult(''); setEvalScores(null);
+    setLoading(true); setBlock('');
+    setResult('');
     const q = query.trim();
 
     try {
@@ -45,13 +42,9 @@ export default function RAGPanel({ session, onSave }) {
       }
       if (data.status === 'ok') {
         setResult(data.result);
-        if (data.eval_scores && Object.keys(data.eval_scores).length > 0) {
-          setEvalScores(data.eval_scores);
-        }
-        const sessionData = { query: q, result: data.result, eval_scores: data.eval_scores || null };
+        const sessionData = { query: q, result: data.result };
         try {
           const created = await api.createSession('rag', q.slice(0, 80), sessionData);
-          console.log('RAG session create response:', created);
           if (created.status === 'ok') {
             onSave({
               id: created.id,
@@ -120,25 +113,6 @@ export default function RAGPanel({ session, onSave }) {
               </button>
             </div>
             <pre className="result-card__content">{result}</pre>
-
-            {/* TODO: eval scores temporarily disabled — fix session state persistence
-            {evalScores && Object.keys(evalScores).length > 0 && (
-              <div className="eval-grid">
-                {[
-                  { label: 'Retrieval',    value: `${evalScores.retrieval_score}%` },
-                  { label: 'Sources',      value: evalScores.sources_matched },
-                  { label: 'Faithfulness', value: `${evalScores.faithfulness}/10` },
-                  { label: 'Relevance',    value: `${evalScores.relevance}/10` },
-                  { label: 'Completeness', value: `${evalScores.completeness}/10` },
-                ].map(({ label, value }) => (
-                  <div key={label} className="eval-cell">
-                    <div className="eval-cell__label">{label}</div>
-                    <div className="eval-cell__value">{value}</div>
-                  </div>
-                ))}
-              </div>
-            )}
-            */}
           </div>
         )}
       </div>

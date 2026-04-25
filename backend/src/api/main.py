@@ -287,7 +287,6 @@ async def rag_query(
         return {
             "status":  "ok",
             "result":  result_text,
-            "eval_scores": result.get("eval_scores", {}),
             "guardrail_warnings": output_summary.get("warnings", []),
             "guardrail_summary":  {
                 "input":  input_summary,
