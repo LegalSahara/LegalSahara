@@ -35,7 +35,9 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup_event():
     init_db()
-
+    from src.shared.db import _init_db
+    import threading
+    threading.Thread(target=_init_db, daemon=True).start()
 
 async def get_current_user(
     authorization: str = Header(None),

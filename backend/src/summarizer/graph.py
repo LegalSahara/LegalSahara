@@ -9,6 +9,8 @@ Fixes applied:
   - evaluate_summary uses fallback LLM to avoid rate-limit crashes
   - validate_input guardrail node added (hard block on non-legal docs)
   - Guardrail rejection now includes accepted document types for user guidance
+  - extract_citations node added for comprehensive citation extraction
+  - Token limits increased for reasoning and facts extraction
 """
 import os
 import time
@@ -73,7 +75,7 @@ _LEGAL_KEYWORDS = [
 ]
 
 
-# ── LLM helpers (defined FIRST so all functions below can use them) ────────────
+# ── LLM helpers ────────────────────────────────────────────────────────────────
 
 def _get_llm(use_fallback: bool = False, temperature: float = 0) -> ChatGroq:
     model = FALLBACK_MODEL if use_fallback else PRIMARY_MODEL
@@ -119,12 +121,10 @@ class LegalDocumentState(TypedDict):
     document_text:             str
     document_metadata:         Dict[str, str]
     extraction_info:           Dict[str, Any]
-    # ── guardrail fields (new) ────────────────────────────────────────────────
-    guardrail_passed:          bool   # False = hard block, skip all pipeline nodes
-    guardrail_blocked_reason:  str    # user-facing message shown on the frontend
-    guardrail_detected_type:   str    # e.g. "recipe", "news article"
-    accepted_document_types:   List[str]  # list of accepted types for user guidance
-    # ─────────────────────────────────────────────────────────────────────────
+    guardrail_passed:          bool
+    guardrail_blocked_reason:  str
+    guardrail_detected_type:   str
+    accepted_document_types:   List[str]
     classification:            str
     classification_confidence: float
     extracted_facts:           str
@@ -132,6 +132,7 @@ class LegalDocumentState(TypedDict):
     extracted_holding:         str
     extracted_reasoning:       str
     extracted_ratio:           str
+    extracted_citations:       str          # ← new field
     final_memo:                str
     evaluation_score:          Dict[str, Any]
     errors:                    List[str]
@@ -161,10 +162,6 @@ def _ocr_image(image) -> tuple[str, float]:
 
 def extract_text_from_file(file_path: str,
                             enable_ocr: bool = OCR_ENABLED) -> dict:
-    """
-    Extract text from PDF / DOCX / TXT / image.
-    Returns dict: {text, method, file_type, page_count, confidence, warnings}
-    """
     path    = Path(file_path)
     ext     = path.suffix.lower()
     result  = dict(text='', method='unknown', file_type=ext,
@@ -231,7 +228,6 @@ def extract_text_from_file(file_path: str,
 # ── GUARDRAIL NODE ────────────────────────────────────────────────────────────
 
 def _heuristic_legal_check(text: str) -> bool:
-    """Fast keyword scan — if enough legal terms found, skip the LLM call."""
     sample = text[:5000].lower()
     hits   = sum(1 for kw in _LEGAL_KEYWORDS if kw in sample)
     print(f"   🔍 Heuristic: {hits} legal keyword(s) matched")
@@ -239,22 +235,14 @@ def _heuristic_legal_check(text: str) -> bool:
 
 
 def validate_input(state: LegalDocumentState) -> dict:
-    """
-    Hard-block guardrail node — runs before all analysis nodes.
-    If any check fails, guardrail_passed = False and every downstream
-    node will no-op via _is_blocked(), returning immediately without
-    making any LLM calls.
-    """
     t0   = time.time()
     text = state["document_text"]
     print("\n🛡️  [Guardrail] Validating document...")
 
-    # Check 1: minimum word count
     word_count = len(text.split())
     print(f"   📏 Word count: {word_count}")
     if word_count < MIN_WORD_COUNT:
         msg = (
-            f"This document cannot be processed.\n\n"
             f"The document you uploaded is too short to analyse ({word_count} words). "
             f"Please upload a complete legal document of at least {MIN_WORD_COUNT} words."
         )
@@ -267,7 +255,6 @@ def validate_input(state: LegalDocumentState) -> dict:
             "processing_time": {**state.get("processing_time", {}), "guardrail": time.time() - t0},
         }
 
-    # Check 2: heuristic keyword fast-path — skip LLM if clearly legal
     if _heuristic_legal_check(text):
         print("   ✅ Heuristic passed — document appears legal")
         return {
@@ -278,7 +265,6 @@ def validate_input(state: LegalDocumentState) -> dict:
             "processing_time": {**state.get("processing_time", {}), "guardrail": time.time() - t0},
         }
 
-    # Check 3: LLM classification for ambiguous documents
     guard_llm = _get_llm(use_fallback=True, temperature=0)
     prompt = ChatPromptTemplate.from_template(
         "You are a document-type classifier. Decide whether the text is a legal document.\n\n"
@@ -313,15 +299,9 @@ def validate_input(state: LegalDocumentState) -> dict:
     if blocked:
         article = "an" if hint and hint[0].lower() in "aeiou" else "a"
         msg = (
-            f"This document cannot be processed.\n\n"
             f"This tool is designed for legal documents only. "
-            f"The file you uploaded appears to be {article} {hint}.\n\n"
-            f"Accepted document types:\n"
+            f"The file you uploaded appears to be {article} {hint}."
         )
-        for doc_type in ACCEPTED_DOCUMENT_TYPES:
-            msg += f"• {doc_type}\n"
-        msg += f"\nPlease upload a valid legal document to continue."
-        
         print(f"   🚨 BLOCKED — not a legal document (hint: {hint})")
         return {
             "guardrail_passed":         False,
@@ -346,7 +326,6 @@ def _is_blocked(state: LegalDocumentState) -> bool:
 
 
 # ── LangGraph node functions ──────────────────────────────────────────────────
-# Each function returns a dict of ONLY the keys it wants to update (best practice).
 
 def classify_document(state: LegalDocumentState) -> dict:
     if _is_blocked(state):
@@ -355,13 +334,23 @@ def classify_document(state: LegalDocumentState) -> dict:
     print("📋 [Classifier] Classifying document...")
 
     prompt = ChatPromptTemplate.from_template(
-        "You are a legal document classification expert.\n\n"
-        "Return ONLY a JSON object (no markdown) with these exact fields:\n"
-        '{{"document_type":"court_opinion","confidence":0.85,'
-        '"jurisdiction":"Pakistan Supreme Court",'
-        '"key_indicators":["Civil Appeal","judgment"],'
-        '"suggested_focus":"Analyze reasoning and legal principles"}}\n\n'
+        "You are a legal document classification expert specializing in Pakistani law.\n\n"
+        "Extract the following from the document and return ONLY a JSON object (no markdown):\n\n"
+        '{{"document_type":"court_opinion","confidence":0.95,'
+        '"case_name":"Zafar Iqbal and others v. Naseer Ahmed and others",'
+        '"case_citation":"C.A. No. 775 of 2015",'
+        '"jurisdiction":"Supreme Court of Pakistan",'
+        '"coram":"Mr. Justice Umar Ata Bandial, Mr. Justice Syed Mansoor Ali Shah",'
+        '"date_of_judgment":"01.10.2021",'
+        '"key_indicators":["Civil Appeal","second appeal","Section 100 CPC"],'
+        '"suggested_focus":"Analyze scope of second appeal and bona fide purchaser doctrine"}}\n\n'
         "Document types: court_opinion, contract, statute, brief, regulation, other\n\n"
+        "IMPORTANT extraction rules:\n"
+        "- case_name: Look for Appellant(s) v. Respondent(s) on the first page\n"
+        "- case_citation: Look for C.A., C.P., Crl.A., PLD, SCMR, MLD, W.P., case numbers\n"
+        "- coram: Look for 'Present:', 'Before:', 'Mr. Justice', 'Mrs. Justice'\n"
+        "- date_of_judgment: Look for 'Date of hearing:', 'Dated:', or date at end\n"
+        "- If a field is not found in the document, use 'Not stated'\n\n"
         "DOCUMENT TEXT (first 3000 chars):\n{document_text}"
     )
     chain = prompt | _llm_instance() | StrOutputParser()
@@ -380,9 +369,13 @@ def classify_document(state: LegalDocumentState) -> dict:
         "classification_confidence": float(res.get("confidence", 0.0)),
         "document_metadata": {
             **state.get("document_metadata", {}),
-            "jurisdiction":    res.get("jurisdiction", "Unknown"),
-            "key_indicators":  ", ".join(res.get("key_indicators", [])),
-            "suggested_focus": res.get("suggested_focus", "General legal analysis"),
+            "case_name":        res.get("case_name",       "Not stated"),
+            "case_citation":    res.get("case_citation",   "Not stated"),
+            "jurisdiction":     res.get("jurisdiction",    "Unknown"),
+            "coram":            res.get("coram",           "Not stated"),
+            "date_of_judgment": res.get("date_of_judgment","Not stated"),
+            "key_indicators":   ", ".join(res.get("key_indicators", [])),
+            "suggested_focus":  res.get("suggested_focus", "General legal analysis"),
         },
         "processing_time": {
             **state.get("processing_time", {}),
@@ -398,25 +391,39 @@ def extract_facts(state: LegalDocumentState) -> dict:
     print("📝 [Facts] Extracting key facts...")
 
     doc_type = state.get("classification", "unknown")
-    focus = (
-        "Focus on: parties, procedural history, factual background, material facts, timeline."
-        if doc_type == "court_opinion" else
-        "Focus on: key factual elements relevant to the legal context."
-    )
 
     prompt = ChatPromptTemplate.from_template(
-        "You are a legal research assistant extracting FACTS from a {doc_type}.\n"
-        "{focus}\n"
-        "Be concise, use legal terminology, cite dates/amounts.\n\n"
+        "You are a legal research assistant extracting FACTS from a {doc_type} "
+        "for a Pakistani legal audience.\n\n"
+        "Extract ALL of the following as concise bullet points:\n"
+        "- Full names of all parties and their legal roles\n"
+        "  (appellant, respondent, vendor, vendee, subsequent purchaser, predecessor-in-interest, etc.)\n"
+        "- Subject matter with exact measurements, amounts, and consideration figures\n"
+        "- Key dates in chronological order\n"
+        "- Material facts relevant to the legal dispute\n"
+        "- Legally significant circumstances:\n"
+        "  * Possession status of property — who was in possession and when\n"
+        "  * Whether parties had notice of prior agreements\n"
+        "  * Location of transactions relative to subject matter\n"
+        "  * Party status (e.g. was wife a party to the agreement?)\n"
+        "  * Whether purchasers were bona fide purchasers for value without notice\n"
+        "  * Any inquiry made by purchasers before buying (e.g. asking village residents)\n"
+        "- Names of counsel/advocates if mentioned\n\n"
+        "STRICT RULES:\n"
+        "- Bullet points only, no paragraphs\n"
+        "- Include exact figures, amounts, dates, measurements from the document\n"
+        "- Do NOT write 'Not explicitly stated' — if a fact is in the document extract it\n"
+        "- Do NOT omit facts relating to bona fide purchase, notice, possession, or party status\n"
+        "- Do NOT invent or assume facts not stated in the document\n\n"
         "DOCUMENT:\n{document_text}\n\nEXTRACTED FACTS:"
     )
     chain = prompt | _llm_instance() | StrOutputParser()
 
     try:
+        # ↑ increased from 8000 to 15000
         facts = _invoke_with_retry(chain, {
             "doc_type":      doc_type,
-            "focus":         focus,
-            "document_text": state["document_text"][:8000],
+            "document_text": state["document_text"][:15000],
         })
     except Exception as e:
         facts = f"Error extracting facts: {e}"
@@ -438,10 +445,17 @@ def extract_issues(state: LegalDocumentState) -> dict:
     print("⚖️  [Issues] Identifying legal issues...")
 
     prompt = ChatPromptTemplate.from_template(
-        "You are a legal research assistant identifying LEGAL ISSUES.\n"
-        "Document Type: {doc_type}\n"
+        "You are a legal research assistant identifying LEGAL ISSUES "
+        "for a Pakistani legal audience.\n"
+        "Document Type: {doc_type}\n\n"
         "A well-framed legal issue states the specific legal question to be resolved "
-        "and references applicable law/doctrine. Phrase as a 'whether' statement.\n\n"
+        "and references the applicable law or doctrine. "
+        "Phrase each issue as a numbered 'whether' statement.\n\n"
+        "Include issues relating to:\n"
+        "- Jurisdiction and scope of the court\n"
+        "- Statutory interpretation\n"
+        "- Factual disputes with legal consequences\n"
+        "- Rights of parties under Pakistani law\n\n"
         "FACTS:\n{facts}\n\nFULL DOCUMENT:\n{document_text}\n\nLEGAL ISSUES:"
     )
     chain = prompt | _llm_instance() | StrOutputParser()
@@ -472,9 +486,14 @@ def extract_holding(state: LegalDocumentState) -> dict:
     print("🔨 [Holding] Extracting court decision...")
 
     prompt = ChatPromptTemplate.from_template(
-        "You are a legal research assistant extracting the HOLDING/DECISION.\n"
-        "State the court's ultimate decision (affirmed/reversed/remanded), specific relief, "
-        "and note any dissenting opinions if present.\n\n"
+        "You are a legal research assistant extracting the HOLDING/DECISION "
+        "from a Pakistani court judgment.\n\n"
+        "State:\n"
+        "1. The court's ultimate decision (allowed/dismissed/affirmed/reversed/remanded/restored)\n"
+        "2. The specific relief granted or denied\n"
+        "3. Which lower court judgment was upheld or set aside\n"
+        "4. Any dissenting or concurring opinions\n\n"
+        "Be specific — name the courts and parties involved in the outcome.\n\n"
         "LEGAL ISSUES:\n{issues}\n\nDOCUMENT:\n{document_text}\n\nHOLDING/DECISION:"
     )
     chain = prompt | _llm_instance() | StrOutputParser()
@@ -504,20 +523,35 @@ def extract_reasoning(state: LegalDocumentState) -> dict:
     print("🧠 [Reasoning] Analyzing legal reasoning...")
 
     prompt = ChatPromptTemplate.from_template(
-        "You are a legal research assistant extracting REASONING/ANALYSIS.\n"
-        "Explain HOW and WHY the decision was reached:\n"
-        "- Legal principles applied\n"
-        "- Statutes or precedents cited\n"
-        "- Logical steps in the analysis\n"
-        "- Factual findings that supported the conclusion\n\n"
+        "You are a legal research assistant extracting the REASONING AND ANALYSIS "
+        "from a Pakistani court judgment.\n\n"
+        "You MUST cover ALL of the following:\n\n"
+        "1. LEGAL PRINCIPLES APPLIED\n"
+        "   - Every legal principle the court applied\n"
+        "   - Exact statutory provisions cited "
+        "(e.g. Section 100 CPC, Article 189 Constitution, Article 161 Qanun-e-Shahdat)\n"
+        "   - ALL case law cited including footnotes "
+        "(e.g. PLD, SCMR, MLD citations with party names)\n\n"
+        "2. COURT'S STEP-BY-STEP ANALYSIS\n"
+        "   - What specific errors did the court identify in the lower court's reasoning?\n"
+        "   - What evidence did the court find was correctly or incorrectly relied upon?\n"
+        "   - What factual findings were accepted or rejected and why?\n\n"
+        "3. KEY FACTUAL FINDINGS SUPPORTING THE CONCLUSION\n"
+        "   - Specific facts the court found decisive\n"
+        "   - Facts the court found to be misconceived or irrelevant\n\n"
+        "STRICT RULES:\n"
+        "- Do NOT skip footnote citations — they are binding precedents\n"
+        "- Be specific about which court, which evidence, which provision\n"
+        "- Do NOT invent citations or principles not in the document\n\n"
         "HOLDING:\n{holding}\n\nDOCUMENT:\n{document_text}\n\nCOURT'S REASONING:"
     )
     chain = prompt | _llm_instance() | StrOutputParser()
 
     try:
+        # ↑ increased from 10000 to 15000 to capture footnotes and later pages
         reasoning = _invoke_with_retry(chain, {
             "holding":       state.get("extracted_holding", ""),
-            "document_text": state["document_text"][:10000],
+            "document_text": state["document_text"][:15000],
         })
     except Exception as e:
         reasoning = f"Error extracting reasoning: {e}"
@@ -539,9 +573,11 @@ def extract_ratio(state: LegalDocumentState) -> dict:
     print("📜 [Ratio] Identifying ratio decidendi...")
 
     prompt = ChatPromptTemplate.from_template(
-        "You are a legal scholar extracting the RATIO DECIDENDI (binding rule of law).\n"
+        "You are a legal scholar extracting the RATIO DECIDENDI (binding rule of law) "
+        "from a Pakistani court judgment.\n\n"
         "Format: '[General legal principle] when [relevant circumstances].'\n"
-        "Distinguish from obiter dicta.\n\n"
+        "Distinguish clearly from obiter dicta.\n"
+        "If multiple ratios exist, number them.\n\n"
         "REASONING:\n{reasoning}\n\nHOLDING:\n{holding}\n\nRATIO DECIDENDI:"
     )
     chain = prompt | _llm_instance() | StrOutputParser()
@@ -564,41 +600,167 @@ def extract_ratio(state: LegalDocumentState) -> dict:
     }
 
 
+# ── NEW: Dedicated citations extraction node ──────────────────────────────────
+
+def extract_citations(state: LegalDocumentState) -> dict:
+    """
+    Dedicated node to extract ALL legal citations from the full document.
+    Scans the entire text including footnotes, headers, and body text.
+    """
+    if _is_blocked(state):
+        return {}
+    t0 = time.time()
+    print("📚 [Citations] Extracting all legal citations...")
+
+    prompt = ChatPromptTemplate.from_template(
+        "You are a legal research assistant extracting ALL citations "
+        "from a Pakistani court judgment.\n\n"
+        "Find and list EVERY citation in the document including:\n\n"
+        "CASE LAW (in body text AND footnotes):\n"
+        "- PLD citations (e.g. PLD 2006 SC 777)\n"
+        "- SCMR citations (e.g. 2009 SCMR 254)\n"
+        "- MLD citations\n"
+        "- Any other case reporters\n"
+        "- Format: Party Name v. Party Name [Citation]\n\n"
+        "STATUTES & LEGISLATION:\n"
+        "- Acts (e.g. Code of Civil Procedure 1908, Specific Relief Act 1877)\n"
+        "- Specific sections cited (e.g. Section 100 CPC, Section 14 Specific Relief Act)\n\n"
+        "CONSTITUTIONAL PROVISIONS:\n"
+        "- Articles of the Constitution (e.g. Article 185, 189, 201)\n\n"
+        "OTHER LEGAL INSTRUMENTS:\n"
+        "- Orders, Rules, Regulations (e.g. Qanun-e-Shahdat Order 1984, Article 161)\n\n"
+        "STRICT RULES:\n"
+        "- List every single citation found — do not skip footnotes\n"
+        "- One citation per line\n"
+        "- Do NOT invent citations not present in the document\n"
+        "- If no citations found, write 'None cited'\n\n"
+        "FULL DOCUMENT:\n{document_text}\n\nALL CITATIONS:"
+    )
+    chain = prompt | _llm_instance() | StrOutputParser()
+
+    try:
+        # Use full document for citations to catch all footnotes
+        citations = _invoke_with_retry(chain, {
+            "document_text": state["document_text"][:20000],
+        })
+    except Exception as e:
+        citations = f"Error extracting citations: {e}"
+
+    return {
+        "extracted_citations": citations,
+        "processing_time":     {**state.get("processing_time", {}),
+                                "citations": time.time() - t0},
+        "errors": state.get("errors", []) + (
+            [f"Citations failed: {citations}"] if citations.startswith("Error") else []
+        ),
+    }
+
+
 def synthesize_memo(state: LegalDocumentState) -> dict:
     if _is_blocked(state):
         return {}
     t0 = time.time()
     print("📝 [Synthesizer] Creating legal memo...")
 
-    doc_type     = state.get("classification", "unknown")
-    jurisdiction = state.get("document_metadata", {}).get("jurisdiction", "Unknown")
+    doc_type      = state.get("classification", "unknown")
+    metadata      = state.get("document_metadata", {})
+    jurisdiction  = metadata.get("jurisdiction",    "Unknown")
+    case_name     = metadata.get("case_name",       "Not stated")
+    case_citation = metadata.get("case_citation",   "Not stated")
+    coram         = metadata.get("coram",           "Not stated")
+    date_judgment = metadata.get("date_of_judgment","Not stated")
 
     prompt = ChatPromptTemplate.from_template(
-        "You are a senior law clerk preparing a professional case brief.\n"
-        "Document Type: {doc_type}\nJurisdiction: {jurisdiction}\n\n"
-        "Write a structured legal memo using this format:\n"
-        "1. FACTS — concise summary\n"
-        "2. PROCEDURAL HISTORY — how case reached this court\n"
-        "3. LEGAL ISSUE(S) — question(s) before the court\n"
-        "4. HOLDING — court's decision\n"
-        "5. REASONING — court's analysis\n"
-        "6. RATIO DECIDENDI — binding legal principle\n"
-        "7. SIGNIFICANCE — why this matters for legal research\n\n"
-        "Use precise legal language. Cite any case names mentioned.\n\n"
-        "FACTS:\n{facts}\n\nISSUES:\n{issues}\n\nHOLDING:\n{holding}\n\n"
-        "REASONING:\n{reasoning}\n\nRATIO DECIDENDI:\n{ratio}\n\nLEGAL MEMO:"
+        "You are a senior law clerk preparing a professional case brief "
+        "for Pakistani legal professionals (lawyers, judges, law students, researchers).\n\n"
+        "Document Type: {doc_type}\n"
+        "Jurisdiction: {jurisdiction}\n\n"
+        "Write a structured case brief using EXACTLY this format and order. "
+        "Do not add any extra sections or change the order.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "CASE BRIEF\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "CASE NAME     : {case_name}\n"
+        "CITATION      : {case_citation}\n"
+        "COURT         : {jurisdiction}\n"
+        "CORAM         : {coram}\n"
+        "DATE          : {date_judgment}\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "1. RATIO DECIDENDI\n"
+        "State the binding legal principle(s) in this format: "
+        "'[Legal principle] when [relevant circumstances].' "
+        "Distinguish clearly from obiter dicta. "
+        "If multiple ratios exist, number them. "
+        "If not determinable, write 'Not stated'.\n\n"
+        "2. LEGAL ISSUE(S)\n"
+        "Frame each issue as a numbered whether-question:\n"
+        "i.   Whether...\n"
+        "ii.  Whether...\n"
+        "(add more if needed)\n\n"
+        "3. FACTS\n"
+        "Concise bullet points only — no paragraphs. Cover:\n"
+        "- Full names and roles of all parties\n"
+        "- Subject matter with exact figures, amounts, measurements\n"
+        "- Key dates in chronological order\n"
+        "- Legally significant circumstances "
+        "(possession, notice, location of transaction, party status, "
+        "inquiry made before purchase)\n\n"
+        "4. PROCEDURAL HISTORY\n"
+        "One short paragraph. How the case reached this court "
+        "and what each lower court decided.\n\n"
+        "5. HOLDING\n"
+        "State the court's ultimate decision first "
+        "(allowed/dismissed/affirmed/reversed/restored), "
+        "then specific relief. Note dissenting or concurring opinions if any.\n\n"
+        "6. REASONING & ANALYSIS\n"
+        "Cover in this order:\n"
+        "- Legal principles and statutory provisions applied (cite exact section/article numbers)\n"
+        "- All case law relied upon including footnote citations\n"
+        "- Specific errors identified in the lower court's reasoning\n"
+        "- Key factual findings that supported the conclusion\n\n"
+        "7. OBITER DICTA\n"
+        "List any non-binding observations made by the court. "
+        "Write 'None' if not present.\n\n"
+        "8. RELEVANT CITATIONS\n"
+        "Use the citations list provided below. "
+        "List every case and statute, one per line. "
+        "Write 'None cited' only if the citations list is empty.\n\n"
+        "9. RESEARCH NOTE\n"
+        "2-3 sentences on why this specific case matters for "
+        "Pakistani legal research and practice. Be specific — mention "
+        "the exact legal doctrine, provision, or principle this case clarifies.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "STRICT RULES:\n"
+        "- Use precise legal terminology throughout\n"
+        "- If a field cannot be determined from the document, write 'Not stated'\n"
+        "- Do NOT invent facts, citations, judge names, or case references\n"
+        "- Section 3 (FACTS) must be bullet points only, never paragraphs\n"
+        "- Section 8 must use the CITATIONS LIST provided — do not ignore it\n"
+        "- Do not add any sections beyond the 9 listed above\n\n"
+        "FACTS:\n{facts}\n\n"
+        "ISSUES:\n{issues}\n\n"
+        "HOLDING:\n{holding}\n\n"
+        "REASONING:\n{reasoning}\n\n"
+        "RATIO DECIDENDI:\n{ratio}\n\n"
+        "CITATIONS LIST:\n{citations}\n\n"
+        "CASE BRIEF:"
     )
     chain = prompt | _llm_instance() | StrOutputParser()
 
     try:
         memo = _invoke_with_retry(chain, {
-            "doc_type":    doc_type,
-            "jurisdiction": jurisdiction,
-            "facts":       state.get("extracted_facts",    ""),
-            "issues":      state.get("extracted_issues",   ""),
-            "holding":     state.get("extracted_holding",  ""),
-            "reasoning":   state.get("extracted_reasoning",""),
-            "ratio":       state.get("extracted_ratio",    ""),
+            "doc_type":      doc_type,
+            "jurisdiction":  jurisdiction,
+            "case_name":     case_name,
+            "case_citation": case_citation,
+            "coram":         coram,
+            "date_judgment": date_judgment,
+            "facts":         state.get("extracted_facts",     ""),
+            "issues":        state.get("extracted_issues",    ""),
+            "holding":       state.get("extracted_holding",   ""),
+            "reasoning":     state.get("extracted_reasoning", ""),
+            "ratio":         state.get("extracted_ratio",     ""),
+            "citations":     state.get("extracted_citations", "None cited"),
         })
     except Exception as e:
         memo = f"Error synthesizing memo: {e}"
@@ -679,28 +841,30 @@ def evaluate_summary(state: LegalDocumentState) -> dict:
     }
 
 
-#    ─ LangGraph workflow ────────────────────────────────────────────────────────
+# ── LangGraph workflow ────────────────────────────────────────────────────────
 
 def _build_workflow() -> StateGraph:
     wf = StateGraph(LegalDocumentState)
-    wf.add_node("validate_input",    validate_input)      # ← new guardrail entry point
+    wf.add_node("validate_input",    validate_input)
     wf.add_node("classify",          classify_document)
     wf.add_node("extract_facts",     extract_facts)
     wf.add_node("extract_issues",    extract_issues)
     wf.add_node("extract_holding",   extract_holding)
     wf.add_node("extract_reasoning", extract_reasoning)
     wf.add_node("extract_ratio",     extract_ratio)
+    wf.add_node("extract_citations", extract_citations)   # ← new node
     wf.add_node("synthesize",        synthesize_memo)
     wf.add_node("evaluate",          evaluate_summary)
 
-    wf.set_entry_point("validate_input")           # ← was "classify"
-    wf.add_edge("validate_input",    "classify")   # ← new edge
+    wf.set_entry_point("validate_input")
+    wf.add_edge("validate_input",    "classify")
     wf.add_edge("classify",          "extract_facts")
     wf.add_edge("extract_facts",     "extract_issues")
     wf.add_edge("extract_issues",    "extract_holding")
     wf.add_edge("extract_holding",   "extract_reasoning")
     wf.add_edge("extract_reasoning", "extract_ratio")
-    wf.add_edge("extract_ratio",     "synthesize")
+    wf.add_edge("extract_ratio",     "extract_citations")  # ← new edge
+    wf.add_edge("extract_citations", "synthesize")         # ← new edge
     wf.add_edge("synthesize",        "evaluate")
     wf.add_edge("evaluate",          END)
     return wf.compile()
@@ -714,24 +878,12 @@ print("✅ Summarizer workflow compiled")
 
 def process_uploaded_document(file_path: str,
                                enable_ocr: bool = OCR_ENABLED) -> dict:
-    """
-    Extract text from a legal document file and run the full
-    summarisation pipeline. Returns the final state dict.
-
-    Key fields in the returned dict:
-      guardrail_passed         (bool) — False = blocked, frontend shows error
-      guardrail_blocked_reason (str)  — user-facing message when blocked
-      accepted_document_types  (list) — accepted document types for user guidance
-      final_memo               (str)  — structured memo (only when passed)
-      document_metadata        (dict) — filename, jurisdiction, page_count
-    """
     print("\n" + "=" * 60)
     print("🏛️  LEGAL DOCUMENT SUMMARISER")
     print("=" * 60)
 
     overall_start = time.time()
 
-    # 1. Extract text
     try:
         extraction = extract_text_from_file(file_path, enable_ocr)
         doc_text   = extraction['text']
@@ -742,7 +894,6 @@ def process_uploaded_document(file_path: str,
         return {
             "guardrail_passed":         False,
             "guardrail_blocked_reason": (
-                "This document cannot be processed.\n\n"
                 "We were unable to extract readable text from your file. "
                 "Please ensure the document is not password-protected or corrupted, "
                 "and try again."
@@ -753,13 +904,16 @@ def process_uploaded_document(file_path: str,
             "errors":                   [f"Text extraction failed: {e}"],
         }
 
-    # 2. Build initial state
     initial: LegalDocumentState = {
         "document_text": doc_text,
         "document_metadata": {
-            "filename":   Path(file_path).name,
-            "file_type":  extraction['file_type'],
-            "page_count": str(extraction['page_count']),
+            "filename":         Path(file_path).name,
+            "file_type":        extraction['file_type'],
+            "page_count":       str(extraction['page_count']),
+            "case_name":        "Not stated",
+            "case_citation":    "Not stated",
+            "coram":            "Not stated",
+            "date_of_judgment": "Not stated",
         },
         "extraction_info": {
             "method":     extraction['method'],
@@ -777,13 +931,13 @@ def process_uploaded_document(file_path: str,
         "extracted_holding":         "",
         "extracted_reasoning":       "",
         "extracted_ratio":           "",
+        "extracted_citations":       "",    # ← new field
         "final_memo":                "",
         "evaluation_score":          {},
         "errors":                    [],
         "processing_time":           {},
     }
 
-    # 3. Run workflow
     try:
         print("\n🔄 Starting analysis pipeline...\n")
         result = _app.invoke(initial)
