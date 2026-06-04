@@ -6,4 +6,5 @@ __pycache__/
 *.pem
 requirements1.txt
 chromadb_v2/
-notebooks/
+node_modules/
+frontend/node_modules/
