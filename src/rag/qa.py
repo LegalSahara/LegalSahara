@@ -11,7 +11,7 @@ import google.generativeai as genai
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 genai.configure(api_key=GOOGLE_API_KEY)
-gemini_model = genai.GenerativeModel("gemma-3-27b-it")
+gemini_model = genai.GenerativeModel("gemma-4-31b-it")
 
 # ============================================
 # FORMATTERS
